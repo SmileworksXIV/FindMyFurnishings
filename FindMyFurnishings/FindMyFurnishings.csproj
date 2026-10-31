@@ -1,0 +1,19 @@
+<Project Sdk="Dalamud.NET.Sdk/15.0.0">
+
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Description>Finds furniture across every estate you can edit, plus your own bags.</Description>
+    <AssemblyName>FindMyFurnishings</AssemblyName>
+    <RootNamespace>FindMyFurnishings</RootNamespace>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Content Include="images\icon.png"
+             CopyToOutputDirectory="PreserveNewest"
+             Condition="Exists('images\icon.png')" />
+  </ItemGroup>
+
+</Project>

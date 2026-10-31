@@ -1,0 +1,13 @@
+# Build output
+bin/
+obj/
+
+# Dalamud dev artefacts
+*.user
+*.suo
+.vs/
+
+# OS noise
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Project-level override for DalamudPackager.
+
+  The NuGet package's own DalamudPackager.targets imports this file if it exists,
+  and its two default targets are conditioned on this file NOT existing - so this
+  replaces them rather than running alongside.
+
+  The only change from the stock Release target is MakeZip="false". The zip step
+  deletes and recreates bin\Release\FindMyFurnishings\, which Windows refuses
+  while the plugin is loaded in game, producing a misleading MSB4018 "build failed"
+  after the compile has already succeeded. Dev plugins load from the DLL directly
+  and never need latest.zip. Set MakeZip="true" again if you ever package a release.
+-->
+<Project>
+  <!--
+    Everyday builds: no zip. The zip step deletes and recreates bin\Release\FindMyFurnishings\,
+    which Windows refuses while the plugin is loaded in game.
+
+    To build a release zip for distribution, UNLOAD the plugin (or close the game) and run:
+        dotnet build -c Release -p:FmfPackage=true
+    which produces bin\Release\FindMyFurnishings\latest.zip in the layout Dalamud expects.
+  -->
+  <Target Name="DalamudPackagerDevNoZip" AfterTargets="Build" Condition="'$(FmfPackage)' != 'true'">
+    <DalamudPackager ProjectDir="$(ProjectDir)"
+                     OutputPath="$(OutputPath)"
+                     AssemblyName="$(AssemblyName)"
+                     MakeZip="false"
+                     Author="$(Author)"
+                     Name="$(Name)"
+                     MinimumDalamudVersion="$(MinimumDalamudVersion)"
+                     Punchline="$(Punchline)"
+                     Description="$(Description)"
+                     ApplicableVersion="$(ApplicableVersion)"
+                     RepoUrl="$(RepoUrl)"
+                     Tags="$(Tags)"
+                     CategoryTags="$(CategoryTags)"
+                     DalamudApiLevel="$(DalamudApiLevel)"
+                     LoadRequiredState="$(LoadRequiredState)"
+                     LoadSync="$(LoadSync)"
+                     CanUnloadAsync="$(CanUnloadAsync)"
+                     LoadPriority="$(LoadPriority)"
+                     ImageUrls="$(ImageUrls)"
+                     IconUrl="$(IconUrl)"
+                     Changelog="$(Changelog)"
+                     AcceptsFeedback="$(AcceptsFeedback)"
+                     FeedbackMessage="$(FeedbackMessage)" />
+  </Target>
+
+  <Target Name="DalamudPackagerRelease" AfterTargets="Build" Condition="'$(FmfPackage)' == 'true'">
+    <DalamudPackager ProjectDir="$(ProjectDir)"
+                     OutputPath="$(OutputPath)"
+                     AssemblyName="$(AssemblyName)"
+                     MakeZip="true"
+                     Author="$(Author)"
+                     Name="$(Name)"
+                     MinimumDalamudVersion="$(MinimumDalamudVersion)"
+                     Punchline="$(Punchline)"
+                     Description="$(Description)"
+                     ApplicableVersion="$(ApplicableVersion)"
+                     RepoUrl="$(RepoUrl)"
+                     Tags="$(Tags)"
+                     CategoryTags="$(CategoryTags)"
+                     DalamudApiLevel="$(DalamudApiLevel)"
+                     LoadRequiredState="$(LoadRequiredState)"
+                     LoadSync="$(LoadSync)"
+                     CanUnloadAsync="$(CanUnloadAsync)"
+                     LoadPriority="$(LoadPriority)"
+                     ImageUrls="$(ImageUrls)"
+                     IconUrl="$(IconUrl)"
+                     Changelog="$(Changelog)"
+                     AcceptsFeedback="$(AcceptsFeedback)"
+                     FeedbackMessage="$(FeedbackMessage)" />
+  </Target>
+</Project>
