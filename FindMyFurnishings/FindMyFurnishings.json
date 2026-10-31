@@ -3,7 +3,7 @@
   "InternalName": "FindMyFurnishings",
   "Author": "Smileworks",
   "Punchline": "Where did I put that lamp?",
-  "Description": "Keeps a searchable index of your furnishings across every estate you have editing access to.\n\nWalk into a house, apartment or Free Company chamber and Find My Furnishings quietly records what is placed indoors, what is placed in the yard, what is sitting in the storeroom and what dye each piece is wearing. It does the same for your inventory, saddlebag and Free Company chest.\n\nAfter that, /fmf searches the lot. Ask for a lamp and it tells you which property it is in, where it was, and when it last looked.\n\nThe game only holds furnishing data for the property you are standing in, so this is an index built from visits rather than a live query. Every result shows the date it was recorded.",
+  "Description": "Keeps a searchable index of all furnishing items across editable estates and inventories.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/SmileworksXIV/FindMyFurnishings",
   "DalamudApiLevel": 15,

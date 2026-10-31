@@ -5,7 +5,7 @@
     "InternalName": "FindMyFurnishings",
     "AssemblyVersion": "0.1.0.0",
     "Punchline": "Where did I put that lamp?",
-    "Description": "Keeps a searchable index of your furnishings across every estate you own - what is placed, what is in a storeroom, and what is sitting in your bags, retainers or the Free Company chest.\n\nThe game only holds furnishing data for the property you are standing in, so this is an index built from visits rather than a live query. Open a property's Housing window and it records itself.",
+    "Description": "Keeps a searchable index of all furnishing items across editable estates and inventories.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "IsHide": false,

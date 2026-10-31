@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <Version>0.1.0</Version>
-    <Description>Finds furniture across every estate you can edit, plus your own bags.</Description>
+    <Description>Keeps a searchable index of all furnishing items across editable estates and inventories.</Description>
     <AssemblyName>FindMyFurnishings</AssemblyName>
     <RootNamespace>FindMyFurnishings</RootNamespace>
     <Nullable>enable</Nullable>
