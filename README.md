@@ -32,15 +32,13 @@ Full instructions are on the plugin's own Instructions tab.
 
 ## What it records, and what it will not
 
-Only estates you own, or a Free Company estate you have editing access to. **Shared
-estates are never recorded** — access is not ownership, and what is in somebody else's
-house is not this plugin's business. Walking into one also deletes anything recorded about
-it before that rule existed.
+Only records estates you own, or a Free Company estate you have editing access to. **Shared
+estates are never recorded**. 
 
 Only furnishing items are indexed. Everything else in your bags and chests is ignored.
 
 Everything the plugin knows lives in a configuration file on your own computer and is
-never sent anywhere.
+never sent anywhere. Use the "Remove" tab to remove all data.
 
 ## Building
 
