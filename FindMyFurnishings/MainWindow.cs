@@ -4,6 +4,7 @@ using System.Linq;
 using System.Numerics;
 using Dalamud.Interface.Windowing;
 using Dalamud.Bindings.ImGui;
+using FFXIVClientStructs.FFXIV.Client.Game;
 
 namespace FindMyFurnishings;
 
@@ -48,7 +49,14 @@ public sealed class MainWindow : Window
         ImGui.InputTextWithHint("##q", "Search every indexed furnishing...", ref search, 100);
 
         var searching = !string.IsNullOrWhiteSpace(search);
-        var hits = searching ? Find(search) : null;
+
+        // Cached, because this runs on every frame the window is open. Rebuilding it from
+        // every piece in every property sixty times a second - twice over, since the
+        // hidden count used to be a second full search - was the window's whole cost.
+        Refresh(searching ? search : string.Empty);
+
+        var hits = searching ? cachedHits : null;
+        var hidden = searching ? cachedHidden : 0;
 
         // Directly under the box: what is in the index, or what the search found.
         if (!searching)
@@ -66,13 +74,24 @@ public sealed class MainWindow : Window
         }
         else
         {
-            ImGui.TextDisabled($"{hits!.Count:N0} {(hits.Count == 1 ? "match" : "matches")}.");
+            var line = $"{hits!.Count:N0} {(hits.Count == 1 ? "match" : "matches")}.";
+
+            if (hidden > 0)
+            {
+                ImGui.TextColored(Warn,
+                    line + $" {hidden:N0} more {(hidden == 1 ? "is" : "are")} placed and hidden " +
+                           "by \"View stored items only\".");
+            }
+            else
+            {
+                ImGui.TextDisabled(line);
+            }
         }
 
         ImGui.Spacing();
 
         var storedOnly = Cfg.SearchStoredOnly;
-        if (ImGui.Checkbox("Stored items only", ref storedOnly))
+        if (ImGui.Checkbox("View stored items only", ref storedOnly))
         {
             Cfg.SearchStoredOnly = storedOnly;
             Cfg.Save(Plugin.PluginInterface);
@@ -88,9 +107,18 @@ public sealed class MainWindow : Window
 
         if (hits!.Count == 0)
         {
-            ImGui.TextDisabled(Cfg.SearchStoredOnly
-                ? "Nothing stored matching that. Untick \"Stored items only\" to include placed furnishings."
-                : "Nothing matching, in anywhere visited so far.");
+            if (hidden > 0)
+            {
+                ImGui.TextColored(Warn,
+                    $"All {hidden:N0} of them are placed. Untick \"View stored items only\" to see where.");
+            }
+            else
+            {
+                ImGui.TextDisabled(Cfg.SearchStoredOnly
+                    ? "Nothing stored matching that, and nothing placed either."
+                    : "Nothing matching, in anywhere visited so far.");
+            }
+
             return;
         }
 
@@ -101,24 +129,66 @@ public sealed class MainWindow : Window
     /// Case-insensitive substring match over every snapshot. Exact prefix matches sort
     /// first, so searching "bed" puts beds above "Riviera Bedside Table".
     /// </summary>
-    private List<Hit> Find(string q)
+    private List<Hit> cachedHits = new();
+    private int cachedHidden;
+    private string cachedQuery = "\u0000";
+    private bool cachedFilter;
+    private int cachedRevision = -1;
+
+    /// <summary>
+    /// Rebuilds the search results, but only when the question or the answer could have
+    /// changed: a different query, a different filter, or an index that has been written
+    /// to since. Otherwise the previous results stand and the frame costs nothing.
+    /// </summary>
+    private void Refresh(string q)
+    {
+        if (cachedQuery == q && cachedFilter == Cfg.SearchStoredOnly
+            && cachedRevision == Configuration.Revision)
+            return;
+
+        cachedQuery = q;
+        cachedFilter = Cfg.SearchStoredOnly;
+        cachedRevision = Configuration.Revision;
+
+        cachedHits = q.Length == 0 ? new List<Hit>() : Find(q, out cachedHidden);
+        if (q.Length == 0) cachedHidden = 0;
+    }
+
+    /// <param name="hiddenByFilter">
+    /// How many matches "View stored items only" held back. Counted on the way past
+    /// rather than by searching a second time - a search that finds three things and
+    /// shows none of them looks exactly like a search that found nothing, so the number
+    /// is needed, but it is not worth a second walk of the whole index for.
+    /// </param>
+    private List<Hit> Find(string q, out int hiddenByFilter)
     {
         var needle = q.Trim();
         var hits = new List<Hit>();
+        var hiding = Cfg.SearchStoredOnly;
+        var hidden = 0;
 
-        bool Wanted(Piece piece) =>
-            piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)
-            && (!Cfg.SearchStoredOnly || !SpotNames.IsPlaced(piece.Where));
+        void Consider(string label, DateTime taken, bool partial, Piece piece)
+        {
+            if (!piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)) return;
+
+            if (hiding && SpotNames.IsPlaced(piece.Where))
+            {
+                hidden++;
+                return;
+            }
+
+            hits.Add(new Hit(label, taken, partial, piece));
+        }
 
         foreach (var p in Cfg.Properties.Values)
             foreach (var piece in p.Pieces)
-                if (Wanted(piece))
-                    hits.Add(new Hit(p.Label, p.TakenUtc, p.Partial, piece));
+                Consider(p.Label, p.TakenUtc, p.Partial, piece);
 
         foreach (var h in Cfg.Holdings.Values)
             foreach (var piece in h.Pieces)
-                if (Wanted(piece))
-                    hits.Add(new Hit(h.DisplayName, h.TakenUtc, h.Partial, piece));
+                Consider(h.DisplayName, h.TakenUtc, h.Partial, piece);
+
+        hiddenByFilter = hidden;
 
         return hits
             .OrderByDescending(h => h.Piece.Name.StartsWith(needle, StringComparison.OrdinalIgnoreCase))
@@ -127,22 +197,37 @@ public sealed class MainWindow : Window
             .ToList();
     }
 
-    /// <summary>Every recorded location of one item, wherever it is.</summary>
-    private List<Hit> Everywhere(uint itemId)
+    private readonly Dictionary<uint, List<Hit>> remembered = new();
+    private int rememberedRevision = -1;
+    private static readonly List<Hit> NoHits = new();
+
+    /// <summary>
+    /// Every location of every remembered item, in one walk of the index rather than one
+    /// walk per item per frame. Fifty remembered furnishings used to mean fifty full
+    /// scans, sixty times a second.
+    /// </summary>
+    private Dictionary<uint, List<Hit>> Remembered()
     {
-        var hits = new List<Hit>();
+        if (rememberedRevision == Configuration.Revision) return remembered;
+
+        rememberedRevision = Configuration.Revision;
+        remembered.Clear();
+
+        if (Cfg.Watched.Count == 0) return remembered;
+
+        foreach (var id in Cfg.Watched) remembered[id] = new List<Hit>();
 
         foreach (var p in Cfg.Properties.Values)
             foreach (var piece in p.Pieces)
-                if (piece.ItemId == itemId)
-                    hits.Add(new Hit(p.Label, p.TakenUtc, p.Partial, piece));
+                if (remembered.TryGetValue(piece.ItemId, out var into))
+                    into.Add(new Hit(p.Label, p.TakenUtc, p.Partial, piece));
 
         foreach (var h in Cfg.Holdings.Values)
             foreach (var piece in h.Pieces)
-                if (piece.ItemId == itemId)
-                    hits.Add(new Hit(h.DisplayName, h.TakenUtc, h.Partial, piece));
+                if (remembered.TryGetValue(piece.ItemId, out var into))
+                    into.Add(new Hit(h.DisplayName, h.TakenUtc, h.Partial, piece));
 
-        return hits;
+        return remembered;
     }
 
     /// <summary>
@@ -164,7 +249,7 @@ public sealed class MainWindow : Window
 
             foreach (var itemId in Cfg.Watched.ToList())
             {
-                var all = Everywhere(itemId);
+                var all = Remembered().TryGetValue(itemId, out var found) ? found : NoHits;
 
                 // The same filter the search uses, so the toggle means one thing
                 // everywhere on the tab.
@@ -197,19 +282,41 @@ public sealed class MainWindow : Window
                     // Every copy is placed. Saying nothing here would read as "you do not
                     // own one", which is the opposite of true.
                     ImGui.TextDisabled($"{all.Count} placed, none stored - hidden by " +
-                                       "\"Stored items only\".");
+                                       "\"View stored items only\".");
                 }
                 else
                 {
+                    // Six of the same lamp in the same room is one fact, not six lines.
+                    // Grouped on the text each row would have printed, so anything that
+                    // actually differs - a storeroom rather than the floor, another
+                    // property, a different dye - still gets a row of its own.
+                    // Same setting as the tables, so "stacked" means one thing everywhere.
+                    var lines = new List<(string Text, bool Stored, int Count)>();
+
                     foreach (var hit in where)
                     {
                         var stored = hit.Piece.Where is Spot.IndoorStoreroom or Spot.OutdoorStoreroom;
-                        var line = $"{hit.Location} - {SpotNames.Label(hit.Piece.Where)}" +
+                        var text = $"{hit.Location} - {SpotNames.Label(hit.Piece.Where)}" +
                                    (string.IsNullOrEmpty(hit.Piece.Detail) ? string.Empty
                                                                            : $" ({hit.Piece.Detail})");
 
-                        if (stored) ImGui.TextColored(Stored, line);
-                        else ImGui.TextUnformatted(line);
+                        var at = Cfg.StackIdentical
+                            ? lines.FindIndex(l => l.Text == text && l.Stored == stored)
+                            : -1;
+
+                        if (at >= 0) lines[at] = (text, stored, lines[at].Count + 1);
+                        else lines.Add((text, stored, 1));
+                    }
+
+                    foreach (var (text, stored, count) in lines)
+                    {
+                        // Plain "x" rather than the multiplication sign: the font atlas is
+                        // not guaranteed to carry it, and a missing glyph box would look
+                        // like a bug in the very list meant to be easier to read.
+                        var label = count > 1 ? $"{text}  x{count}" : text;
+
+                        if (stored) ImGui.TextColored(Stored, label);
+                        else ImGui.TextUnformatted(label);
                     }
                 }
                 ImGui.Unindent();
@@ -245,6 +352,17 @@ public sealed class MainWindow : Window
             return;
         }
 
+        // The same filter the Search tab offers, so the toggle means one thing wherever
+        // you meet it.
+        var storedOnly = Cfg.SearchStoredOnly;
+        if (ImGui.Checkbox("View stored items only", ref storedOnly))
+        {
+            Cfg.SearchStoredOnly = storedOnly;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
+        ImGui.Spacing();
+
         // Grouped rather than one flat list: with several estates, retainers and bags, the
         // list outgrew a screen almost immediately.
         foreach (var section in SectionNames.All)
@@ -267,9 +385,52 @@ public sealed class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// The pieces a list should show, after the stored-only filter.
+    /// </summary>
+    private List<Piece> Visible(List<Piece> pieces) =>
+        Cfg.SearchStoredOnly
+            ? pieces.Where(x => !SpotNames.IsPlaced(x.Where)).ToList()
+            : pieces;
+
+    /// <summary>
+    /// How many placed pieces this kind of property can hold, where that is knowable.
+    ///
+    /// Apartments and chambers are a flat 150. Estates come in three sizes - cottage,
+    /// house, mansion - and nothing the plugin can read tells them apart, so no ceiling is
+    /// claimed for those rather than quoting a mansion's at a cottage.
+    /// </summary>
+    private static int? PlacedCeiling(PropertySnapshot p) => p.Estate switch
+    {
+        EstateType.PersonalChambers => 150,
+        EstateType.ApartmentRoom or EstateType.ApartmentBuilding => 150,
+        _ => null,
+    };
+
+    /// <summary>
+    /// A property header that explains its own number: what is there in total, how much of
+    /// it is out in the room, and how much is in the storeroom. "(180)" on its own left
+    /// you working out which of the three it meant.
+    /// </summary>
+    private static string Breakdown(PropertySnapshot p)
+    {
+        var placed = p.Pieces.Count(x => SpotNames.IsPlaced(x.Where));
+        var stored = p.Pieces.Count - placed;
+        var ceiling = PlacedCeiling(p);
+
+        var placedText = ceiling == null
+            ? $"{placed:N0} placed"
+            : $"{placed:N0}/{ceiling:N0} placed";
+
+        return $"{p.Pieces.Count:N0} total: {placedText}, {stored:N0} stored";
+    }
+
     private void DrawProperty(PropertySnapshot p)
     {
-        if (!ImGui.CollapsingHeader($"{p.Label} ({p.Pieces.Count:N0})###prop{p.Key.Id}")) return;
+        var shown = Visible(p.Pieces);
+
+        if (!ImGui.CollapsingHeader($"{p.Label} ({Breakdown(p)})###prop{p.Key.Id}"))
+            return;
 
         ImGui.Indent();
 
@@ -308,7 +469,7 @@ public sealed class MainWindow : Window
             ImGui.EndCombo();
         }
 
-        DrawTable($"##t{p.Key.Id}", Sorted(p.Pieces.Select(x =>
+        DrawTable($"##t{p.Key.Id}", Sorted(shown.Select(x =>
             new Hit(p.Label, p.TakenUtc, p.Partial, x))), showLocation: false);
 
         ImGui.Unindent();
@@ -317,11 +478,20 @@ public sealed class MainWindow : Window
 
     private void DrawHolding(HoldingSnapshot h)
     {
-        if (!ImGui.CollapsingHeader($"{h.DisplayName} ({h.Pieces.Count:N0})###hold{h.Id}")) return;
+        var shown = Visible(h.Pieces);
+
+        // A container has no placed-versus-stored to explain, so it just says how many -
+        // and says what it is counting, because a bare "0 total" on a retainer reads like
+        // the retainer was never read rather than like it holds no furniture.
+        var held = h.Pieces.Count;
+        var label = $"{held:N0} total furnishing{(held == 1 ? "" : "s")}";
+
+        if (!ImGui.CollapsingHeader($"{h.DisplayName} ({label})###hold{h.Id}"))
+            return;
 
         ImGui.Indent();
         Provenance(h.TakenUtc, h.Partial);
-        DrawTable($"##th{h.Id}", Sorted(h.Pieces.Select(x =>
+        DrawTable($"##th{h.Id}", Sorted(shown.Select(x =>
             new Hit(h.DisplayName, h.TakenUtc, h.Partial, x))), showLocation: false);
         ImGui.Unindent();
         ImGui.Spacing();
@@ -434,14 +604,59 @@ public sealed class MainWindow : Window
 
     // ---------- shared table ----------
 
+    /// <summary>
+    /// Rows as they should be drawn, identical ones folded together with a count.
+    ///
+    /// "Identical" means the same item, in the same spot, with the same dye and detail, in
+    /// the same place - anything that would otherwise have printed the same line twice.
+    /// The count sums quantities, so a bag holding two stacks of five reads as ten rather
+    /// than as two.
+    /// </summary>
+    private List<(Hit Row, int Count)> Grouped(List<Hit> rows)
+    {
+        if (!Cfg.StackIdentical)
+            return rows.Select(r => (r, Math.Max(1, r.Piece.Quantity))).ToList();
+
+        var grouped = new List<(Hit Row, int Count)>();
+        var seen = new Dictionary<string, int>();
+
+        foreach (var row in rows)
+        {
+            var p = row.Piece;
+            var key = $"{p.ItemId}|{(int)p.Where}|{p.Detail}|{p.StainName}|{row.Location}";
+            var n = Math.Max(1, p.Quantity);
+
+            if (seen.TryGetValue(key, out var at))
+                grouped[at] = (grouped[at].Row, grouped[at].Count + n);
+            else
+            {
+                seen[key] = grouped.Count;
+                grouped.Add((row, n));
+            }
+        }
+
+        return grouped;
+    }
+
+    /// <summary>Rows a table may hold before it gets a scroll region of its own.</summary>
+    private const int ScrollAfterRows = 25;
+
     private void DrawTable(string id, List<Hit> rows, bool showLocation)
     {
         var cols = showLocation ? 5 : 4;
         var full = false;
+        var shown = Grouped(rows);
 
-        if (!ImGui.BeginTable(id, cols, ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH |
-                                        ImGuiTableFlags.ScrollY | ImGuiTableFlags.SizingStretchProp))
-            return;
+        // A scrolling table claims the rest of the window whether it needs the room or
+        // not, which left a short list - two things in your bags - sitting above a screen
+        // of nothing. Only ask for a scroll region once there is enough to scroll; below
+        // that the table hugs its rows and the window scrolls instead.
+        var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH |
+                    ImGuiTableFlags.SizingStretchProp;
+
+        if (shown.Count > ScrollAfterRows) flags |= ImGuiTableFlags.ScrollY;
+
+        if (!ImGui.BeginTable(id, cols, flags)) return;
 
         ImGui.TableSetupColumn("##keep", ImGuiTableColumnFlags.WidthFixed, 26);
         ImGui.TableSetupColumn("##icon", ImGuiTableColumnFlags.WidthFixed, IconSize + 6);
@@ -450,7 +665,7 @@ public sealed class MainWindow : Window
         if (showLocation) ImGui.TableSetupColumn("Property", ImGuiTableColumnFlags.WidthStretch, 2);
         ImGui.TableHeadersRow();
 
-        foreach (var row in rows)
+        foreach (var (row, count) in shown)
         {
             var p = row.Piece;
             ImGui.TableNextRow();
@@ -472,9 +687,13 @@ public sealed class MainWindow : Window
             // actually out in the room versus what is sitting in the storeroom.
             var stored = p.Where is Spot.IndoorStoreroom or Spot.OutdoorStoreroom;
 
+            // Plain "x" rather than the multiplication sign: the font atlas is not
+            // guaranteed to carry it, and a missing glyph would look like a fault.
+            var label = count > 1 ? $"{p.Name}  x{count:N0}" : p.Name;
+
             ImGui.TableNextColumn();
-            if (stored) ImGui.TextColored(Stored, p.Name);
-            else ImGui.TextUnformatted(p.Name);
+            if (stored) ImGui.TextColored(Stored, label);
+            else ImGui.TextUnformatted(label);
 
             if (!string.IsNullOrEmpty(p.StainName))
             {
@@ -636,6 +855,15 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped("Off silences the routine confirmations, which appear every time you " +
                           "open a Housing window. /fmf here still confirms, and anything that " +
                           "went wrong is still reported.");
+
+        var stack = Cfg.StackIdentical;
+        if (ImGui.Checkbox("Show identical items as one row with a count", ref stack))
+        {
+            Cfg.StackIdentical = stack;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+        ImGui.TextWrapped("Six of the same lamp in the same room become \"x6\" on one line, in " +
+                          "every list. Off lists each one separately.");
 
         var bags = Cfg.AutoIndexBags;
         if (ImGui.Checkbox("Record my bags, saddlebag and FC chest", ref bags))

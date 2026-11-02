@@ -83,8 +83,24 @@ public sealed unsafe class InventoryScanner
         var name = ActiveRetainerName();
         if (string.IsNullOrEmpty(name)) return null;
 
+        // A retainer is only reachable with its window up, so an empty read here is a real
+        // empty read.
         return Read($"retainer.{name}", $"{name} (retainer)", RetainerBags, Spot.Retainer,
-                    "Page", Section.Retainers);
+                    "Page", Section.Retainers, trustEmpty: true);
+    }
+
+    /// <summary>Whether a retainer is open, without paying for its name.</summary>
+    public static bool RetainerOpen()
+    {
+        try
+        {
+            var m = RetainerManager.Instance();
+            return m != null && m->GetActiveRetainer() != null;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -107,9 +123,15 @@ public sealed unsafe class InventoryScanner
         }
     }
 
-    public HoldingSnapshot? FreeCompany() =>
+    /// <param name="chestOpen">
+    /// Whether the Free Company chest window is up. The chest's pages claim to be loaded
+    /// long before they hold anything, so without this the plugin read an untouched chest
+    /// as empty and wrote that over a correct record - the chest with one piece of
+    /// furniture in it reported "checked, no furnishings in it" until it was opened.
+    /// </param>
+    public HoldingSnapshot? FreeCompany(bool chestOpen) =>
         Read("fc", "Free Company chest", FcChest, Spot.FreeCompanyChest, "Tab",
-             Section.FreeCompany);
+             Section.FreeCompany, trustEmpty: chestOpen);
 
     /// <summary>
     /// Reads a set of container pages.
@@ -118,9 +140,16 @@ public sealed unsafe class InventoryScanner
     /// empty of furniture" and "the chest has never been opened this session", and only
     /// the first is worth writing into the index. A partial read is kept but flagged.
     /// </summary>
+    /// <param name="trustEmpty">
+    /// Whether a reading with nothing in it can be believed. IsLoaded is not enough on its
+    /// own for the shared containers: they advertise themselves before the server has sent
+    /// their contents, so a read taken too early is indistinguishable from an empty one.
+    /// When this is false, an empty result is discarded rather than written.
+    /// </param>
     private HoldingSnapshot? Read(string id, string display, InventoryType[] pages,
                                   Spot spot, string pageLabel,
-                                  Section section = Section.Inventory)
+                                  Section section = Section.Inventory,
+                                  bool trustEmpty = true)
     {
         var inv = InventoryManager.Instance();
         if (inv == null) return null;
@@ -134,6 +163,11 @@ public sealed unsafe class InventoryScanner
         };
 
         var loadedAny = false;
+
+        // Any item at all, furnishing or not. A chest full of crafting materials and no
+        // furniture is genuinely loaded; a chest that reads as completely empty has almost
+        // certainly not arrived yet.
+        var sawAnyItem = false;
 
         for (var p = 0; p < pages.Length; p++)
         {
@@ -150,6 +184,8 @@ public sealed unsafe class InventoryScanner
             {
                 var slot = c->GetInventorySlot(s);
                 if (slot == null || slot->ItemId == 0) continue;
+
+                sawAnyItem = true;
                 if (!sheet.IsFurnishing(slot->ItemId)) continue;
 
                 snap.Pieces.Add(sheet.Make(slot->ItemId, spot, (int)slot->Quantity, 0,
@@ -159,8 +195,59 @@ public sealed unsafe class InventoryScanner
 
         if (!loadedAny) return null;
 
+        if (!trustEmpty && !sawAnyItem)
+        {
+            log.Debug($"[FMF] {display}: reads as empty and has not been opened - " +
+                      "not recorded, in case it simply has not arrived.");
+            return null;
+        }
+
         log.Debug($"[FMF] {display}: {snap.Pieces.Count:N0} furnishing(s)" +
                   (snap.Partial ? ", some pages not loaded." : "."));
         return snap;
+    }
+
+    /// <summary>
+    /// A cheap number that changes when any watched container does.
+    ///
+    /// No sheet lookups, no snapshot, no allocation - just a walk of the slots. That is
+    /// what makes it affordable several times a second, which is in turn what makes a
+    /// furnishing landing in your bag show up at once instead of whenever the next lazy
+    /// sweep came round.
+    /// </summary>
+    public long RawSignature(bool chestOpen)
+    {
+        var inv = InventoryManager.Instance();
+        if (inv == null) return 0;
+
+        long sig = 0;
+
+        Fold(inv, Bags, ref sig);
+        Fold(inv, Saddle, ref sig);
+
+        // Only the containers that are actually readable. Folding a stale Free Company
+        // chest in would make the number flap between visits and trigger rescans that
+        // cannot learn anything.
+        if (chestOpen) Fold(inv, FcChest, ref sig);
+        if (RetainerOpen()) Fold(inv, RetainerBags, ref sig);
+
+        return sig;
+    }
+
+    private static void Fold(InventoryManager* inv, InventoryType[] pages, ref long sig)
+    {
+        foreach (var page in pages)
+        {
+            var c = inv->GetInventoryContainer(page);
+            if (c == null || !c->IsLoaded) continue;
+
+            for (var s = 0; s < c->Size; s++)
+            {
+                var slot = c->GetInventorySlot(s);
+                if (slot == null || slot->ItemId == 0) continue;
+
+                sig += slot->ItemId * 31L + slot->Quantity;
+            }
+        }
     }
 }

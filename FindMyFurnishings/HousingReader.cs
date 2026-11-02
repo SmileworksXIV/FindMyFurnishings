@@ -175,6 +175,56 @@ public sealed unsafe class HousingReader
         return n;
     }
 
+    /// <summary>
+    /// A cheap value that changes whenever the housing containers do.
+    ///
+    /// Walks the same pages a capture would, but touches only the raw slot ids - no sheet
+    /// lookups, no allocation, no snapshot. That is what makes it safe to run several
+    /// times a second while a Housing window is open, so a piece moved is noticed at once
+    /// rather than whenever the next slow tick happens to land.
+    ///
+    /// Not loaded is folded in deliberately: pages arriving or going away is itself a
+    /// change worth re-reading for.
+    /// </summary>
+    public static long RawSignature(bool indoors)
+    {
+        var inv = InventoryManager.Instance();
+        if (inv == null) return 0;
+
+        long sig = 17;
+
+        foreach (var set in new[]
+                 {
+                     indoors ? InteriorPlaced : ExteriorPlaced,
+                     indoors ? InteriorStore : ExteriorStore,
+                 })
+        {
+            foreach (var t in set)
+            {
+                var c = inv->GetInventoryContainer(t);
+                if (c == null || !c->IsLoaded)
+                {
+                    sig = (sig * 31) + 1;
+                    continue;
+                }
+
+                sig = (sig * 31) + c->Size + 2;
+
+                for (var slot = 0; slot < c->Size; slot++)
+                {
+                    var item = c->GetInventorySlot(slot);
+                    if (item == null || item->ItemId == 0) continue;
+
+                    // Slot index included, so moving a piece from one page to another is a
+                    // change even when the set of ids is identical.
+                    sig += ((long)item->ItemId * 31) + ((long)slot << 17);
+                }
+            }
+        }
+
+        return sig;
+    }
+
     /// <summary>Refuses to walk a list longer than this. A bad pointer should not hang the game.</summary>
     private const int MaxTeleportEntries = 512;
 
@@ -208,7 +258,40 @@ public sealed unsafe class HousingReader
     /// Shared by detection and by /fmf dump, so the diagnostics describe the same read the
     /// plugin actually performs rather than a parallel one that might differ.
     /// </summary>
+    private static ulong estateCacheId;
+    private static EstateType? estateCacheValue;
+    private static string estateCacheDiagnosis = string.Empty;
+    private static DateTime estateCacheAt = DateTime.MinValue;
+
+    /// <summary>
+    /// Which kind of estate a house id is, remembered for a few seconds.
+    ///
+    /// The uncached answer comes from a GAME function, and calling that function at the
+    /// wrong moment crashed the client outright. A property does not change what it is, so
+    /// asking once and keeping the answer removes almost every call without costing
+    /// anything: the only thing that moves is which property you are standing in, and that
+    /// is a different id.
+    /// </summary>
     public static EstateType? EstateOf(ulong houseId, out string diagnosis)
+    {
+        if (houseId != 0 && houseId == estateCacheId
+            && DateTime.UtcNow - estateCacheAt < TimeSpan.FromSeconds(10))
+        {
+            diagnosis = estateCacheDiagnosis;
+            return estateCacheValue;
+        }
+
+        var answer = EstateOfUncached(houseId, out diagnosis);
+
+        estateCacheId = houseId;
+        estateCacheValue = answer;
+        estateCacheDiagnosis = diagnosis;
+        estateCacheAt = DateTime.UtcNow;
+
+        return answer;
+    }
+
+    private static EstateType? EstateOfUncached(ulong houseId, out string diagnosis)
     {
         diagnosis = "no telepo";
 
