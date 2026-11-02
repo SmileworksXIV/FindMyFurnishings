@@ -1,7 +1,7 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
 
   <PropertyGroup>
-    <Version>0.1.0</Version>
+    <Version>0.1.1</Version>
     <Description>Keeps a searchable index of all furnishing items across editable estates and inventories.</Description>
     <AssemblyName>FindMyFurnishings</AssemblyName>
     <RootNamespace>FindMyFurnishings</RootNamespace>
