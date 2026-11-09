@@ -6,11 +6,10 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 namespace FindMyFurnishings;
 
 /// <summary>
-/// Furnishings you own but have not placed: in your bags, your saddlebag, or the Free
-/// Company chest.
+/// Furnishings you own but have not placed: in your bags, your saddlebag, or a retainer's.
 ///
 /// Only furnishing items are recorded. This is a furniture index, and a complete dump of
-/// the FC chest belongs in a different plugin.
+/// a container belongs in a different plugin.
 /// </summary>
 public sealed unsafe class InventoryScanner
 {
@@ -39,13 +38,6 @@ public sealed unsafe class InventoryScanner
         InventoryType.RetainerPage7,
     ];
 
-    private static readonly InventoryType[] FcChest =
-    [
-        InventoryType.FreeCompanyPage1, InventoryType.FreeCompanyPage2,
-        InventoryType.FreeCompanyPage3, InventoryType.FreeCompanyPage4,
-        InventoryType.FreeCompanyPage5,
-    ];
-
     private readonly FurnitureSheet sheet;
     private readonly IPluginLog log;
 
@@ -53,6 +45,22 @@ public sealed unsafe class InventoryScanner
     {
         this.sheet = sheet;
         this.log = log;
+    }
+
+    /// <summary>
+    /// The character named in a container's id, where there is one.
+    ///
+    /// "bags.Sarna Umbra" and "saddle.Current Mood" carry it. "retainer.Flykra" does not
+    /// - a retainer's id is the retainer's own name. Empty for those, which is the honest
+    /// answer rather than a guess.
+    /// </summary>
+    public static string OwnerFromId(string id)
+    {
+        foreach (var prefix in new[] { "bags.", "saddle." })
+            if (id.StartsWith(prefix, StringComparison.Ordinal))
+                return id[prefix.Length..];
+
+        return string.Empty;
     }
 
     /// <summary>
@@ -65,20 +73,21 @@ public sealed unsafe class InventoryScanner
     /// </summary>
     public static Section SectionOf(string id) =>
         id.StartsWith("retainer.", StringComparison.Ordinal) ? Section.Retainers
-        : id == "fc" ? Section.FreeCompany
         : Section.Inventory;
 
     public HoldingSnapshot? Bag(string owner) =>
-        Read($"bags.{owner}", $"{owner}'s inventory", Bags, Spot.Inventory, "Bag");
+        Read($"bags.{owner}", $"{owner}'s inventory", Bags, Spot.Inventory, "Bag",
+             owner: owner);
 
     public HoldingSnapshot? Saddlebag(string owner) =>
-        Read($"saddle.{owner}", $"{owner}'s saddlebag", Saddle, Spot.Saddlebag, "Saddlebag");
+        Read($"saddle.{owner}", $"{owner}'s saddlebag", Saddle, Spot.Saddlebag, "Saddlebag",
+             owner: owner);
 
     /// <summary>
     /// The retainer currently open, if any. Each retainer is stored under its own name, so
     /// opening a second one adds to the index rather than replacing the first.
     /// </summary>
-    public HoldingSnapshot? Retainer()
+    public HoldingSnapshot? Retainer(string owner)
     {
         var name = ActiveRetainerName();
         if (string.IsNullOrEmpty(name)) return null;
@@ -86,7 +95,7 @@ public sealed unsafe class InventoryScanner
         // A retainer is only reachable with its window up, so an empty read here is a real
         // empty read.
         return Read($"retainer.{name}", $"{name} (retainer)", RetainerBags, Spot.Retainer,
-                    "Page", Section.Retainers, trustEmpty: true);
+                    "Page", Section.Retainers, trustEmpty: true, owner: owner);
     }
 
     /// <summary>Whether a retainer is open, without paying for its name.</summary>
@@ -123,16 +132,6 @@ public sealed unsafe class InventoryScanner
         }
     }
 
-    /// <param name="chestOpen">
-    /// Whether the Free Company chest window is up. The chest's pages claim to be loaded
-    /// long before they hold anything, so without this the plugin read an untouched chest
-    /// as empty and wrote that over a correct record - the chest with one piece of
-    /// furniture in it reported "checked, no furnishings in it" until it was opened.
-    /// </param>
-    public HoldingSnapshot? FreeCompany(bool chestOpen) =>
-        Read("fc", "Free Company chest", FcChest, Spot.FreeCompanyChest, "Tab",
-             Section.FreeCompany, trustEmpty: chestOpen);
-
     /// <summary>
     /// Reads a set of container pages.
     ///
@@ -149,7 +148,8 @@ public sealed unsafe class InventoryScanner
     private HoldingSnapshot? Read(string id, string display, InventoryType[] pages,
                                   Spot spot, string pageLabel,
                                   Section section = Section.Inventory,
-                                  bool trustEmpty = true)
+                                  bool trustEmpty = true,
+                                  string owner = "")
     {
         var inv = InventoryManager.Instance();
         if (inv == null) return null;
@@ -159,6 +159,7 @@ public sealed unsafe class InventoryScanner
             Id = id,
             DisplayName = display,
             Section = section,
+            Owner = owner,
             TakenUtc = DateTime.UtcNow,
         };
 
@@ -215,7 +216,7 @@ public sealed unsafe class InventoryScanner
     /// furnishing landing in your bag show up at once instead of whenever the next lazy
     /// sweep came round.
     /// </summary>
-    public long RawSignature(bool chestOpen)
+    public long RawSignature()
     {
         var inv = InventoryManager.Instance();
         if (inv == null) return 0;
@@ -225,10 +226,9 @@ public sealed unsafe class InventoryScanner
         Fold(inv, Bags, ref sig);
         Fold(inv, Saddle, ref sig);
 
-        // Only the containers that are actually readable. Folding a stale Free Company
-        // chest in would make the number flap between visits and trigger rescans that
-        // cannot learn anything.
-        if (chestOpen) Fold(inv, FcChest, ref sig);
+        // Only the containers that are actually readable. Folding a retainer's bags in
+        // while no retainer is open would make the number flap between visits and trigger
+        // rescans that cannot learn anything.
         if (RetainerOpen()) Fold(inv, RetainerBags, ref sig);
 
         return sig;

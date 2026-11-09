@@ -33,7 +33,7 @@ public sealed class MainWindow : Window
         if (ImGui.BeginTabBar("##fmftabs"))
         {
             if (ImGui.BeginTabItem("Search")) { DrawSearch(); ImGui.EndTabItem(); }
-            if (ImGui.BeginTabItem("Places")) { DrawPlaces(); ImGui.EndTabItem(); }
+            if (ImGui.BeginTabItem("Furnishings")) { DrawPlaces(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Settings")) { DrawSettings(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Removal")) { DrawRemoval(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Instructions")) { DrawHelp(); ImGui.EndTabItem(); }
@@ -98,7 +98,7 @@ public sealed class MainWindow : Window
         }
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Hides anything already placed, leaving what is in a storeroom, " +
-                             "your bags, a retainer or the Free Company chest.");
+                             "your bags or a retainer.");
 
         ImGui.Spacing();
         DrawRemembered();
@@ -363,27 +363,133 @@ public sealed class MainWindow : Window
 
         ImGui.Spacing();
 
-        // Grouped rather than one flat list: with several estates, retainers and bags, the
-        // list outgrew a screen almost immediately.
-        foreach (var section in SectionNames.All)
+        // Grouped by character rather than by kind. With alts, "Apartment" and "someone's
+        // inventory" repeated down the list with no way to tell whose was whose.
+        //
+        // Company property sits inside the sections of the characters who belong to that
+        // company - matched by company, never by who happened to record it. An alt in
+        // another company does not get somebody else's hall in their section, and a hall
+        // whose company nobody here belongs to keeps a group of its own rather than being
+        // filed under a guess.
+        var me = Plugin.LocalPlayerName;
+
+        // Company property - the hall and its yard - belongs to the company rather than to
+        // any one character, so it is held back here and placed inside the sections of the
+        // characters who belong to that company.
+        var fcProps = Cfg.Properties.Values
+            .Where(p => p.Estate == EstateType.FreeCompanyEstate)
+            .OrderBy(p => p.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var props = Cfg.Properties.Values.Except(fcProps).ToList();
+        var holds = Cfg.Holdings.Values.ToList();
+
+        var characters = props.Select(p => Who(p.Owner))
+            .Concat(holds.Select(h => Who(h.Owner)))
+            .Concat(Cfg.CompanyOf.Keys)
+            .Distinct()
+            .OrderByDescending(n => n == me)
+            .ThenBy(n => n, StringComparer.CurrentCultureIgnoreCase)
+            .ToList();
+
+        var claimed = new HashSet<string>();
+
+        foreach (var who in characters)
         {
-            var props = Cfg.Properties.Values.Where(p => p.Section == section)
-                           .OrderBy(p => p.Label, StringComparer.OrdinalIgnoreCase).ToList();
-            var holds = Cfg.Holdings.Values.Where(h => h.Section == section)
-                           .OrderBy(h => h.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
+            var company = Cfg.CompanyOf.GetValueOrDefault(who, string.Empty);
 
-            if (props.Count == 0 && holds.Count == 0) continue;
+            var mine = props.Where(p => Who(p.Owner) == who)
+                            .OrderBy(p => p.Label, StringComparer.OrdinalIgnoreCase).ToList();
+            var held = holds.Where(h => Who(h.Owner) == who)
+                            .OrderBy(h => h.DisplayName, StringComparer.OrdinalIgnoreCase).ToList();
 
-            ImGui.Separator();
-            ImGui.TextColored(Heading, SectionNames.Label(section));
+            // Estates you have editing rights to but do not own. Kept apart from your own,
+            // because somebody else can empty one between visits and a count you cannot
+            // account for is worse than no count.
+            var guests = mine.Where(IsGuest).ToList();
+            var owned = mine.Except(guests).ToList();
+
+            var retainers = held.Where(h => h.Section == Section.Retainers).ToList();
+            var carried = held.Except(retainers).ToList();
+
+            var theirFcProps = company.Length == 0
+                ? new List<PropertySnapshot>()
+                : fcProps.Where(p => p.FreeCompany == company).ToList();
+
+            foreach (var p in theirFcProps) claimed.Add(p.Key.Id);
+
+            var total = mine.Sum(p => p.Pieces.Count) + held.Sum(h => h.Pieces.Count)
+                      + theirFcProps.Sum(p => p.Pieces.Count);
+
+            // The character you are on opens by default. Search reads everything whatever
+            // is folded, so collapsing hides nothing from the index.
+            var flags = who == me ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+
+            if (!ImGui.CollapsingHeader($"{who} ({total:N0})###who{who}", flags)) continue;
+
+            ImGui.Indent();
+
+            // What the character is carrying themselves, named first and without a heading
+            // of its own - the bags and saddlebag are the character.
+            foreach (var h in carried) DrawHolding(h);
+
+            Group("Retainers", retainers, DrawHolding);
+            Group("Owned Estates", owned, DrawProperty);
+            Group("Guest Estates", guests, DrawProperty);
+            Group(Company(company), theirFcProps, DrawProperty);
+
+            ImGui.Unindent();
             ImGui.Spacing();
+        }
 
-            foreach (var p in props) DrawProperty(p);
-            foreach (var h in holds) DrawHolding(h);
+        // Anything whose company no character here belongs to.
+        var orphans = fcProps.Where(p => !claimed.Contains(p.Key.Id)).ToList();
+        if (orphans.Count == 0) return;
 
+        foreach (var group in orphans.GroupBy(p => p.FreeCompany)
+                                     .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase))
+        {
+            var rows = group.OrderBy(p => p.Label, StringComparer.OrdinalIgnoreCase).ToList();
+            var sum = rows.Sum(p => p.Pieces.Count);
+
+            if (!ImGui.CollapsingHeader($"{Company(group.Key)} ({sum:N0})###fc{group.Key}",
+                                        ImGuiTreeNodeFlags.DefaultOpen)) continue;
+
+            ImGui.Indent();
+            foreach (var p in rows) DrawProperty(p);
+            ImGui.Unindent();
             ImGui.Spacing();
         }
     }
+
+    /// <summary>
+    /// A labelled run of rows inside a character's section. Drawn only when it has
+    /// something in it - an empty "Guest Estates" is a question the window cannot answer.
+    /// </summary>
+    private void Group<T>(string title, List<T> rows, Action<T> draw)
+    {
+        if (rows.Count == 0) return;
+
+        ImGui.TextColored(Heading, title);
+        foreach (var row in rows) draw(row);
+    }
+
+    /// <summary>The company heading, named so it reads as one - "Free Company (Dead Inside)".</summary>
+    private static string Company(string name) =>
+        string.IsNullOrWhiteSpace(name) ? "Free Company" : $"Free Company ({name})";
+
+    /// <summary>
+    /// Whether a property is somebody else's that you merely have the run of.
+    ///
+    /// Only the teleport list can say so, and it only says so for estates explicitly
+    /// shared with you. An estate it has nothing to say about is treated as your own,
+    /// which is what it was before guest estates had a section at all.
+    /// </summary>
+    private static bool IsGuest(PropertySnapshot p) => p.Estate == EstateType.SharedEstate;
+
+    /// <summary>A character's name, or Unknown for anything recorded before names were kept.</summary>
+    private static string Who(string owner) =>
+        string.IsNullOrWhiteSpace(owner) ? "Unknown" : owner;
 
     /// <summary>
     /// The pieces a list should show, after the stored-only filter.
@@ -412,17 +518,40 @@ public sealed class MainWindow : Window
     /// it is out in the room, and how much is in the storeroom. "(180)" on its own left
     /// you working out which of the three it meant.
     /// </summary>
+    /// <summary>
+    /// How much storeroom this property has, where that is knowable.
+    ///
+    /// The same 150 as the floor for a chamber, but kept as its own number rather than
+    /// reusing the placed ceiling: the two are only equal by coincidence, and a published
+    /// table claiming chambers placed 100 was briefly believed until a chamber holding 146
+    /// disproved it. Estates still get none - their storeroom matches their size, and
+    /// nothing the plugin can read tells a cottage from a mansion, so a denominator there
+    /// would be a guess dressed as a fact.
+    /// </summary>
+    private static int? StoredCeiling(PropertySnapshot p) => p.Estate switch
+    {
+        EstateType.PersonalChambers => 150,
+        EstateType.ApartmentRoom or EstateType.ApartmentBuilding => 150,
+        _ => null,
+    };
+
     private static string Breakdown(PropertySnapshot p)
     {
         var placed = p.Pieces.Count(x => SpotNames.IsPlaced(x.Where));
         var stored = p.Pieces.Count - placed;
-        var ceiling = PlacedCeiling(p);
 
-        var placedText = ceiling == null
+        var placedCeiling = PlacedCeiling(p);
+        var storedCeiling = StoredCeiling(p);
+
+        var placedText = placedCeiling == null
             ? $"{placed:N0} placed"
-            : $"{placed:N0}/{ceiling:N0} placed";
+            : $"{placed:N0}/{placedCeiling:N0} placed";
 
-        return $"{p.Pieces.Count:N0} total: {placedText}, {stored:N0} stored";
+        var storedText = storedCeiling == null
+            ? $"{stored:N0} stored"
+            : $"{stored:N0}/{storedCeiling:N0} stored";
+
+        return $"{placedText}, {storedText}";
     }
 
     private void DrawProperty(PropertySnapshot p)
@@ -756,7 +885,6 @@ public sealed class MainWindow : Window
         Point("Owned Free Company chambers");
         Point("Inventory bags");
         Point("Retainer inventory");
-        Point("Free Company chest");
         Point("Free Company estates that you have editing access to - indoor and outdoor " +
               "(placed items and storeroom)");
 
@@ -791,13 +919,12 @@ public sealed class MainWindow : Window
                           "individually to record both. This must be done for both indoors and " +
                           "outdoors. Close when recorded.");
         ImGui.Spacing();
-        ImGui.TextWrapped("Recording Inventories: the FC chest, retainers, chocobo saddlebag and " +
-                          "character inventory are recorded when the menu is opened. Close when " +
-                          "recorded.");
+        ImGui.TextWrapped("Recording Inventories: retainers, chocobo saddlebag and character " +
+                          "inventory are recorded when the menu is opened. Close when recorded.");
         ImGui.Spacing();
         ImGui.TextWrapped("Note: your own changes to your estates will always re-record. " +
                           "Recording may drift if other editors change or withdraw furniture in " +
-                          "a shared estate or shared Free Company chest.");
+                          "a shared estate.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -846,6 +973,18 @@ public sealed class MainWindow : Window
 
         ImGui.Separator();
 
+        var shared = Cfg.RecordSharedEstates;
+        if (ImGui.Checkbox("Record estates you have editing rights on", ref shared))
+        {
+            Cfg.RecordSharedEstates = shared;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+        ImGui.TextWrapped("Off by default, so visiting a friend's house does not file it under " +
+                          "your own index. This is your setting about your own index - it does " +
+                          "not ask the owner, and nothing here could: a plugin only ever sees " +
+                          "its own game client, and the owner may not run this plugin at all.");
+        ImGui.Spacing();
+
         var say = Cfg.AnnounceCaptures;
         if (ImGui.Checkbox("Confirm each recording in chat", ref say))
         {
@@ -866,7 +1005,7 @@ public sealed class MainWindow : Window
                           "every list. Off lists each one separately.");
 
         var bags = Cfg.AutoIndexBags;
-        if (ImGui.Checkbox("Record my bags, saddlebag and FC chest", ref bags))
+        if (ImGui.Checkbox("Record my bags, saddlebag and retainers", ref bags))
         {
             Cfg.AutoIndexBags = bags;
             Cfg.Save(Plugin.PluginInterface);

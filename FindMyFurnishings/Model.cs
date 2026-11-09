@@ -5,7 +5,7 @@ using FFXIVClientStructs.FFXIV.Client.Game;
 namespace FindMyFurnishings;
 
 /// <summary>
-/// Top-level grouping in the Places list. Stored per entry rather than worked out on the
+/// Top-level grouping in the Furnishings list. Stored per entry rather than worked out on the
 /// fly, because the game does not tell us whether a plot is a personal estate or a Free
 /// Company house - so the automatic guess has to be correctable and has to stick.
 /// </summary>
@@ -159,6 +159,31 @@ public sealed class PropertySnapshot
     /// </summary>
     public string CustomName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// The character who recorded this, for the places that are per-character.
+    ///
+    /// Two characters in one Free Company each have a chamber, and may each have an
+    /// apartment. They are separate properties with separate contents, but the game calls
+    /// them all "Apartment" and "Free Company Chamber", so a list of them was identical
+    /// rows. The address underneath did tell them apart; a room number is not something
+    /// anyone reads as a person.
+    ///
+    /// Stored rather than read live, because relabelling runs at startup across every
+    /// property at once - using whoever is logged in at that moment would stamp their name
+    /// onto everybody else's rooms.
+    /// </summary>
+    public string Owner { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The Free Company this belongs to, for company property.
+    ///
+    /// An alt in a different company has a different hall, yard and chest, and the game
+    /// names none of them after the company. Stored at capture time for the same reason
+    /// as <see cref="Owner"/>: read live, it would be whichever company the character
+    /// logged in at relabelling time happens to belong to.
+    /// </summary>
+    public string FreeCompany { get; set; } = string.Empty;
+
     /// <summary>The rename if there is one, otherwise the address.</summary>
     public string Label => string.IsNullOrWhiteSpace(CustomName) ? DisplayName : CustomName;
 
@@ -184,6 +209,20 @@ public sealed class PropertySnapshot
     public bool StoreroomLoaded { get; set; }
 
     /// <summary>
+    /// How many furnishings this property's containers have room for, placed and stored.
+    ///
+    /// Counted from the containers themselves rather than from a table of estate sizes.
+    /// The game hands over each page with its own slot count, so summing the pages this
+    /// property is actually allowed gives a number nobody had to look up and that cannot
+    /// drift when Square Enix changes a limit. Zero means the pages had not loaded when
+    /// this was taken, and the UI then shows the bare count rather than inventing a
+    /// denominator.
+    /// </summary>
+    public int PlacedCapacity { get; set; }
+
+    public int StoredCapacity { get; set; }
+
+    /// <summary>
     /// Set when some storeroom pages had not loaded at snapshot time. The counts are then
     /// known to be incomplete, and the UI says so rather than implying the room is empty.
     /// </summary>
@@ -194,6 +233,21 @@ public sealed class PropertySnapshot
 public sealed class HoldingSnapshot
 {
     public string Id { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The character this belongs to.
+    ///
+    /// Not derivable from the id for every container: bags and saddlebags carry the
+    /// character's name, but a retainer is keyed by the RETAINER's name and says nothing
+    /// about who hired them. Recorded at read time instead, where the answer is known.
+    /// Empty on anything stored before this existed, which files it under Unknown until
+    /// its next read.
+    /// </summary>
+    public string Owner { get; set; } = string.Empty;
+
+    /// <summary>The company this belongs to, for the Free Company chest.</summary>
+    public string FreeCompany { get; set; } = string.Empty;
+
     public string DisplayName { get; set; } = string.Empty;
     public Section Section { get; set; } = Section.Inventory;
     public DateTime TakenUtc { get; set; }

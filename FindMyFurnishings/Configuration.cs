@@ -13,7 +13,7 @@ public class Configuration : IPluginConfiguration
     /// <summary>Every property ever visited, keyed by PropertyKey.Id.</summary>
     public Dictionary<string, PropertySnapshot> Properties { get; set; } = new();
 
-    /// <summary>Bags, saddlebags and the FC chest, keyed by their own id.</summary>
+    /// <summary>Bags, saddlebags and retainers, keyed by their own id.</summary>
     public Dictionary<string, HoldingSnapshot> Holdings { get; set; } = new();
 
     /// <summary>
@@ -81,6 +81,28 @@ public class Configuration : IPluginConfiguration
 
     // --- Behaviour ---
     public bool AutoIndexBags { get; set; } = true;
+
+    /// <summary>
+    /// Also record estates you only have editing rights on.
+    ///
+    /// This is YOUR setting about YOUR index, and it cannot be anything else. A Dalamud
+    /// plugin sees only its own client, so nothing here asks the owner's permission or
+    /// could be made to - the owner may not even run this plugin. Off by default so a
+    /// guest visit does not quietly file somebody else's house under your name, and
+    /// turning it on records what the game already shows you when it lets you decorate.
+    /// </summary>
+    public bool RecordSharedEstates { get; set; }
+
+    /// <summary>
+    /// Which Free Company each character belongs to.
+    ///
+    /// Company property is the company's, not the character's who walked in - but a
+    /// character does belong to a company, and that is what lets a hall appear under
+    /// everyone actually in it rather than under whoever recorded it. Filled in as each
+    /// character plays, so an alt not logged into since this existed simply has no entry
+    /// and its company's property stays in its own group.
+    /// </summary>
+    public Dictionary<string, string> CompanyOf { get; set; } = new();
 
     /// <summary>Flag a snapshot as worth refreshing once it is this old. 0 disables the hint.</summary>
     public int StaleAfterDays { get; set; } = 30;

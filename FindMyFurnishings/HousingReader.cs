@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Info;
 using Lumina.Excel.Sheets;
 
 namespace FindMyFurnishings;
@@ -96,7 +97,8 @@ public sealed unsafe class HousingReader
     /// have been granted editing rights to, which is the point. An explicitly shared
     /// estate is refused whichever path is taken.
     /// </summary>
-    public static bool CanIndexHere(bool housingWindowOpen, out string why)
+    public static bool CanIndexHere(bool housingWindowOpen, out string why,
+                                    bool allowShared = false)
     {
         why = "not in a property";
 
@@ -106,7 +108,7 @@ public sealed unsafe class HousingReader
 
         var estate = EstateOf(mgr->GetCurrentHouseId().Id, out var diagnosis);
 
-        if (estate == EstateType.SharedEstate)
+        if (estate == EstateType.SharedEstate && !allowShared)
         {
             why = "a shared estate - only estates you own are recorded";
             return false;
@@ -143,7 +145,12 @@ public sealed unsafe class HousingReader
     public static string CurrentKeyId(bool housingWindowOpen = false)
     {
         var mgr = HousingManager.Instance();
-        if (mgr == null || !CanIndexHere(housingWindowOpen, out _)) return string.Empty;
+        // Identity only, never contents, so a shared estate is allowed through here - the
+        // capture path does its own gating and needs to know where you are standing in
+        // order to apply it.
+        if (mgr == null || !CanIndexHere(housingWindowOpen, out _, allowShared: true))
+            return string.Empty;
+
         return KeyOf(mgr).Id;
     }
 
@@ -377,11 +384,11 @@ public sealed unsafe class HousingReader
         return mgr != null && mgr->IsInside();
     }
 
-    public PropertySnapshot? Capture(bool housingWindowOpen)
+    public PropertySnapshot? Capture(bool housingWindowOpen, bool allowShared = false)
     {
         var mgr = HousingManager.Instance();
-        if (mgr == null || !CanIndexHere(housingWindowOpen, out _)) return null;
-        if (IsSharedEstate()) return null;
+        if (mgr == null || !CanIndexHere(housingWindowOpen, out _, allowShared)) return null;
+        if (!allowShared && IsSharedEstate()) return null;
 
         var indoors = mgr->IsInside();
         var key = KeyOf(mgr);
@@ -391,6 +398,11 @@ public sealed unsafe class HousingReader
             Key = key,
             Outdoors = !indoors,
             TakenUtc = DateTime.UtcNow,
+
+            // Taken here, at the one moment it is certainly right: the character standing
+            // in the room is the character whose room it is.
+            Owner = Plugin.LocalPlayerName,
+            FreeCompany = FreeCompanyName(),
         };
         Describe(snap, probeGame: true);
 
@@ -403,13 +415,23 @@ public sealed unsafe class HousingReader
 
         snap.PlacedLoaded = ReadContainers(indoors ? InteriorPlaced : ExteriorPlaced,
                                            indoors ? Spot.IndoorPlaced : Spot.OutdoorPlaced,
-                                           snap, pages);
+                                           snap, pages, out var placedSlots);
         snap.StoreroomLoaded = ReadContainers(indoors ? InteriorStore : ExteriorStore,
                                               indoors ? Spot.IndoorStoreroom
-                                                      : Spot.OutdoorStoreroom, snap, pages);
+                                                      : Spot.OutdoorStoreroom, snap, pages,
+                                              out var storedSlots);
+
+        // Only when the pages actually answered. A capacity taken from containers that had
+        // not loaded would read as zero room, which is worse than saying nothing.
+        if (snap.PlacedLoaded) snap.PlacedCapacity = placedSlots;
+        if (snap.StoreroomLoaded) snap.StoredCapacity = storedSlots;
 
         snap.Partial = !snap.PlacedLoaded || !snap.StoreroomLoaded;
         snap.StoreroomPagesLoaded = LoadedStoreroomPages(indoors);
+
+        log.Information($"[FMF] Container capacity at {snap.Address}: " +
+                        $"{snap.PlacedCapacity} placed slots, {snap.StoredCapacity} stored slots " +
+                        $"(estate={snap.Estate?.ToString() ?? "unknown"}).");
 
         log.Information($"[FMF] Captured {snap.Pieces.Count:N0} pieces at {snap.Address} " +
                         $"(placed loaded: {snap.PlacedLoaded}, storeroom loaded: " +
@@ -442,9 +464,15 @@ public sealed unsafe class HousingReader
     };
 
     /// <returns>True if at least one of these containers had actually loaded.</returns>
+    /// <param name="slots">
+    /// Total room across the pages that answered - the property's own capacity, straight
+    /// from the game rather than from a table of estate sizes that would need maintaining.
+    /// </param>
     private bool ReadContainers(InventoryType[] pages, Spot spot, PropertySnapshot snap,
-                                int maxPages = int.MaxValue)
+                                int maxPages, out int slots)
     {
+        slots = 0;
+
         var inv = InventoryManager.Instance();
         if (inv == null) return false;
 
@@ -461,6 +489,7 @@ public sealed unsafe class HousingReader
             if (c == null || !c->IsLoaded) continue;
 
             any = true;
+            slots += c->Size;
 
             for (var slot = 0; slot < c->Size; slot++)
             {
@@ -520,20 +549,19 @@ public sealed unsafe class HousingReader
                 return;
 
             case EstateType.FreeCompanyEstate:
-                snap.DisplayName = snap.Outdoors
-                    ? "Free Company Yard"
-                    : "Estate Hall (Free Company)";
+                snap.DisplayName = OfCompany(
+                    snap.Outdoors ? "Free Company Yard" : "Estate Hall (Free Company)", snap);
                 if (!snap.SectionPinned) snap.Section = Section.FreeCompany;
                 return;
 
             case EstateType.PersonalChambers:
-                snap.DisplayName = "Free Company Chamber";
+                snap.DisplayName = Whose("Free Company Chamber", snap);
                 if (!snap.SectionPinned) snap.Section = Section.FreeCompany;
                 return;
 
             case EstateType.ApartmentRoom:
             case EstateType.ApartmentBuilding:
-                snap.DisplayName = "Apartment";
+                snap.DisplayName = Whose("Apartment", snap);
                 if (!snap.SectionPinned) snap.Section = Section.PrivateEstate;
                 return;
         }
@@ -541,7 +569,7 @@ public sealed unsafe class HousingReader
         // No teleport entry matched. What the address alone can still settle:
         if (k.IsApartment)
         {
-            snap.DisplayName = "Apartment";
+            snap.DisplayName = Whose("Apartment", snap);
             if (!snap.SectionPinned) snap.Section = Section.PrivateEstate;
             return;
         }
@@ -549,7 +577,7 @@ public sealed unsafe class HousingReader
         // A room that is not an apartment is a chamber inside a Free Company house.
         if (k.Room > 0)
         {
-            snap.DisplayName = "Free Company Chamber";
+            snap.DisplayName = Whose("Free Company Chamber", snap);
             if (!snap.SectionPinned) snap.Section = Section.FreeCompany;
             return;
         }
@@ -559,6 +587,54 @@ public sealed unsafe class HousingReader
         // is editable precisely because this line is a guess.
         snap.DisplayName = snap.Outdoors ? "Estate Yard" : "Estate Hall";
         if (!snap.SectionPinned) snap.Section = Section.PrivateEstate;
+    }
+
+    /// <summary>
+    /// "Apartment" for one character, "Apartment - Eira Vanadis" once we know whose.
+    ///
+    /// Only the per-character places get this. A Free Company hall is the company's, not
+    /// whoever happened to walk in, and stamping a name on it would say something untrue.
+    /// </summary>
+    private static string Whose(string kind, PropertySnapshot snap) =>
+        string.IsNullOrWhiteSpace(snap.Owner) ? kind : $"{kind} - {snap.Owner}";
+
+    /// <summary>"Free Company Yard - Dead Inside", once we know which company.</summary>
+    private static string OfCompany(string kind, PropertySnapshot snap) =>
+        string.IsNullOrWhiteSpace(snap.FreeCompany) ? kind : $"{kind} - {snap.FreeCompany}";
+
+    /// <summary>
+    /// The logged-in character's Free Company, by name and by id.
+    ///
+    /// The name is what anyone reads; the id is what the chest is filed under, because a
+    /// company can be renamed and two companies on different worlds can share a name.
+    /// Empty when the proxy has not been populated - no company, or not loaded yet - and
+    /// every caller treats empty as "do not claim to know".
+    /// </summary>
+    public static string FreeCompanyName() => Company(out var name, out _) ? name : string.Empty;
+
+    public static ulong FreeCompanyId() => Company(out _, out var id) ? id : 0;
+
+    private static bool Company(out string name, out ulong id)
+    {
+        name = string.Empty;
+        id = 0;
+
+        try
+        {
+            var info = InfoModule.Instance();
+            if (info == null) return false;
+
+            var proxy = (InfoProxyFreeCompany*)info->GetInfoProxyById(InfoProxyId.FreeCompany);
+            if (proxy == null || proxy->Id == 0) return false;
+
+            name = proxy->NameString;
+            id = proxy->Id;
+            return !string.IsNullOrWhiteSpace(name);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>District, ward, and whichever of plot or room applies.</summary>

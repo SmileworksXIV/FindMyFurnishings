@@ -75,16 +75,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     /// </summary>
     private long lastBagSignature;
 
-    /// <summary>
-    /// How long the Free Company chest stays trustworthy after its window shuts.
-    ///
-    /// Same reason as the housing grace: depositing a piece and closing straight away is
-    /// a round trip to the server, and the containers outlive the addon by a moment.
-    /// </summary>
-    private DateTime chestReadableUntil = DateTime.MinValue;
-
-    private const string ChestAddon = "FreeCompanyChest";
-
     /// <summary>The property recorded while the current housing window has been open.</summary>
     private string capturedThisSession = string.Empty;
 
@@ -218,7 +208,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // retainer is only readable while it is open at a bell, so one you have not
         // visited lately would otherwise keep whatever section it was stored with.
         foreach (var held in Config.Holdings.Values)
+        {
             held.Section = InventoryScanner.SectionOf(held.Id);
+
+            // Bags and saddlebags carry the character's name in their id, so a record
+            // written before owners were kept can say whose it is without being re-read.
+            // A retainer cannot: it is keyed by the retainer's name, which says nothing
+            // about who hired them, so those wait until the next visit to a bell.
+            if (string.IsNullOrWhiteSpace(held.Owner))
+                held.Owner = InventoryScanner.OwnerFromId(held.Id);
+        }
+
+        // The Free Company chest is no longer tracked. It is a shared container that
+        // anyone in the company can empty, so a record of it went stale the moment
+        // someone else moved something - and it was never this plugin's job anyway.
+        var chests = Config.Holdings.Keys
+                           .Where(k => k == "fc" || k.StartsWith("fc.", StringComparison.Ordinal))
+                           .ToList();
+
+        foreach (var key in chests) Config.Holdings.Remove(key);
 
         if (Config.DedupeWatched())
             Log.Information("[FMF] Removed repeated entries from the remembered list.");
@@ -328,9 +336,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             nextHousingCheck = now.AddMilliseconds(150);
             WatchHousingWindow();
 
-            if (GameGui.GetAddonByName(ChestAddon) != nint.Zero)
-                chestReadableUntil = now.AddSeconds(GraceSeconds);
-
             // The containers get the same treatment the housing window got: a raw sum
             // costs almost nothing, so it can be taken several times a second, and the
             // snapshot is only built on the tick something actually changed. A furnishing
@@ -338,7 +343,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             // whenever the lazy sweep next came round.
             if (Config.AutoIndexBags)
             {
-                var bagRaw = bags.RawSignature(now < chestReadableUntil);
+                var bagRaw = bags.RawSignature();
 
                 if (bagRaw != lastBagSignature)
                 {
@@ -546,7 +551,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void Save(PropertySnapshot snap)
     {
         if (Config.Properties.TryGetValue(snap.Key.Id, out var previous))
+        {
             snap.CustomName = previous.CustomName;
+
+            // A reading taken where these could not be resolved must not blank ones that
+            // were resolved before.
+            if (string.IsNullOrWhiteSpace(snap.Owner)) snap.Owner = previous.Owner;
+            if (string.IsNullOrWhiteSpace(snap.FreeCompany)) snap.FreeCompany = previous.FreeCompany;
+        }
 
         Config.Properties[snap.Key.Id] = snap;
         Config.Save(PluginInterface);
@@ -577,22 +589,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // opens one only where you may edit.
         var windowOpen = windowIsOpen ?? HousingUi.IsOpen(GameGui, out _);
 
-        if (!HousingReader.CanIndexHere(windowOpen, out var why))
+        if (!HousingReader.CanIndexHere(windowOpen, out var why, Config.RecordSharedEstates))
         {
             if (manual) ChatGui.PrintError($"[FMF] Not recording here: {why}.");
             return false;
         }
 
-        // A shared estate is somebody else's. Walking into one also clears anything
-        // recorded about it before that rule existed.
-        if (HousingReader.IsSharedEstate())
+        // A shared estate is somebody else's. Off by default, and walking into one then
+        // also clears anything recorded about it before that rule existed.
+        if (!Config.RecordSharedEstates && HousingReader.IsSharedEstate())
         {
             var id = HousingReader.CurrentKeyId(windowOpen);
             if (id.Length > 0 && Config.Properties.Remove(id)) Config.Save(PluginInterface);
 
             if (manual)
-                ChatGui.PrintError("[FMF] This is a shared estate. Only estates you own are " +
-                                   "recorded, not ones you are a guest on.");
+                ChatGui.PrintError("[FMF] This is a shared estate, and \"Record estates you " +
+                                   "have editing rights on\" is off in Settings.");
             return false;
         }
 
@@ -604,7 +616,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return false;
         }
 
-        var snap = housing.Capture(windowOpen);
+        var snap = housing.Capture(windowOpen, Config.RecordSharedEstates);
         if (snap == null)
         {
             if (manual)
@@ -725,18 +737,81 @@ public sealed unsafe class Plugin : IDalamudPlugin
     /// False for the rapid re-reads taken just after a piece moved. Those are the same
     /// containers being watched settle, not news.
     /// </param>
+    /// <summary>
+    /// Files this character's retainers under their name.
+    ///
+    /// A retainer is stored under the RETAINER's name, which says nothing about who hired
+    /// them - so records written before owners were kept sat under "Unknown", and would
+    /// have stayed there until each was next opened at a bell. The game knows the answer
+    /// without anyone travelling: the retainer list belongs to the logged-in character, so
+    /// every name on it is theirs.
+    ///
+    /// Once per character per session; the list does not change while you play.
+    /// </summary>
+    private void ClaimRetainers(string who)
+    {
+        if (who == claimedRetainersFor) return;
+        claimedRetainersFor = who;
+
+        try
+        {
+            var manager = RetainerManager.Instance();
+            if (manager == null) return;
+
+            var changed = false;
+            var count = manager->GetRetainerCount();
+
+            for (uint i = 0; i < count; i++)
+            {
+                var retainer = manager->GetRetainerBySortedIndex(i);
+                if (retainer == null) continue;
+
+                var id = $"retainer.{retainer->NameString}";
+
+                if (!Config.Holdings.TryGetValue(id, out var held)) continue;
+                if (held.Owner == who) continue;
+
+                held.Owner = who;
+                changed = true;
+            }
+
+            if (changed)
+            {
+                Log.Information($"[FMF] Filed {who}'s retainers under their name.");
+                Config.Save(PluginInterface);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error(ex, "[FMF] Failed to read the retainer list.");
+        }
+    }
+
+    private string claimedRetainersFor = string.Empty;
+
     private void ScanBags(bool force, bool announce)
     {
         var who = LocalPlayerName;
         if (string.IsNullOrEmpty(who)) return;
 
+        ClaimRetainers(who);
+
+        // Which company this character is in, so the window can file the hall under
+        // everyone who belongs to it.
+        var company = HousingReader.FreeCompanyName();
+        if (company.Length > 0 &&
+            (!Config.CompanyOf.TryGetValue(who, out var known) || known != company))
+        {
+            Config.CompanyOf[who] = company;
+            Config.Save(PluginInterface);
+        }
+
         Store(bags.Bag(who), announce);
         Store(bags.Saddlebag(who), announce);
-        Store(bags.Retainer(), announce);
-        Store(bags.FreeCompany(chestOpen: DateTime.UtcNow < chestReadableUntil), announce);
+        Store(bags.Retainer(who), announce);
 
         if (force)
-            ChatGui.Print($"[FMF] Scanned bags, saddlebag and FC chest - " +
+            ChatGui.Print($"[FMF] Scanned bags, saddlebag and retainers - " +
                           $"{Config.Holdings.Values.Sum(h => h.Pieces.Count):N0} furnishings held.");
     }
 
