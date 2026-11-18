@@ -163,6 +163,41 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private const double SettleSeconds = 2.5;
 
+    /// <summary>
+    /// Look again even though the containers have not moved.
+    ///
+    /// Set when a reading was put off rather than refused - a storeroom that reads empty
+    /// is only believed once it has stayed empty - because nothing else would bring the
+    /// watcher back: an unchanged property that has already been recorded is otherwise
+    /// left alone, which is how an emptied storeroom came to be never recorded at all.
+    /// </summary>
+    private bool recheck;
+
+    /// <summary>
+    /// The earliest a refused or deferred reading is tried again.
+    ///
+    /// A capture that returned false used to be repeated on every tick - seven full reads
+    /// a second for as long as the window stayed open, and, where the refusal spoke, the
+    /// same line in chat seven times a second. Once a second is as fast as any of the
+    /// reasons for waiting can change.
+    /// </summary>
+    private DateTime retryNotBefore = DateTime.MinValue;
+
+    private const double RetrySeconds = 1.0;
+
+    /// <summary>The property whose storeroom is currently reading empty, and since when.</summary>
+    private string emptyStoreKey = string.Empty;
+    private DateTime emptyStoreSince = DateTime.MinValue;
+
+    /// <summary>
+    /// How long a storeroom must go on reading empty before that is believed.
+    ///
+    /// A storeroom reports itself loaded a moment before it is filled, so one empty read
+    /// proves nothing. But that moment is short, and an empty reading that is still there
+    /// two seconds later is a storeroom somebody emptied.
+    /// </summary>
+    private const double EmptyStoreroomSettle = 2.0;
+
 
     public Plugin()
     {
@@ -198,6 +233,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
                               "estates. Visit each one again to rebuild it properly.");
             }
         }
+
+        // A chamber is a numbered room that is not an apartment. Anything else recorded as
+        // one was filed by the old detection, which called every unmatched property in the
+        // same ward as one of your estates a chamber. The stored type outranks everything
+        // when a record is relabelled, so it is cleared here and the address decides
+        // instead; the next visit settles it properly.
+        foreach (var stored in Config.Properties.Values)
+            if (stored.Estate == EstateType.PersonalChambers
+                && (stored.Key.Room <= 0 || stored.Key.IsApartment))
+                stored.Estate = null;
 
         // Entries stored before the current naming rules get relabelled in place, so a
         // rename of the scheme does not require travelling to every property again.
@@ -298,8 +343,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         // Anything else is treated as a search, so "/fmf oak bed" goes straight to results.
-        main.IsOpen = true;
-        ChatGui.Print($"[FMF] Searching for \"{a}\".");
+        // The text has to be handed to the window: opening it and announcing a search was
+        // all this did, with the box left empty.
+        main.SearchFor(a);
     }
 
     // ---------- automatic capture ----------
@@ -322,6 +368,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingRaw = NoReading;
             pendingSince = DateTime.MinValue;
             visitStartedAt = DateTime.MinValue;
+            recheck = false;
+            retryNotBefore = DateTime.MinValue;
             lastSpoken.Clear();
             watchUntil = DateTime.MinValue;
             return;
@@ -385,6 +433,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
     /// </summary>
     private void OnHousingClosed(AddonEvent type, AddonArgs args)
     {
+        // Leaving a property closes its windows too, and that close arrives mid-transition
+        // - the one moment the ownership check is known to take the client down. The poll
+        // already refuses to run there; this is the same rule for the event.
+        if (Condition[ConditionFlag.BetweenAreas] || Condition[ConditionFlag.BetweenAreas51])
+            return;
+
         // One reading now, in case the change had already landed, and the watch stays
         // alive for a few seconds in case it had not.
         watchUntil = DateTime.UtcNow.AddSeconds(GraceSeconds);
@@ -429,6 +483,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingRaw = NoReading;
             pendingSince = DateTime.MinValue;
             visitStartedAt = DateTime.MinValue;
+            recheck = false;
+            retryNotBefore = DateTime.MinValue;
             lastSpoken.Clear();
             return;
         }
@@ -441,7 +497,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // only when something has actually moved, which is rarer than the two-second poll
         // this replaced ever was.
         var raw = HousingReader.RawSignature(HousingReader.IsIndoors());
-        if (raw == lastRawSignature && capturedThisSession.Length > 0) return;
+        var moved = raw != lastRawSignature;
+
+        if (!moved && capturedThisSession.Length > 0 && !recheck) return;
+
+        // Nothing has moved, so this is a second look at a reading that was refused or put
+        // off. Worth taking, but not seven times a second.
+        if (!moved && now < retryNotBefore) return;
 
         // Seen once is not seen. Act only on a reading that is still the same reading a
         // tick later, so a set of containers caught mid-swap is never written down or
@@ -478,6 +540,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             // Remember what we saw anyway, so an unidentifiable property is not re-asked
             // about on every single tick.
             lastRawSignature = raw;
+            retryNotBefore = now.AddSeconds(RetrySeconds);
             return;
         }
 
@@ -491,6 +554,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingRaw = NoReading;
             pendingSince = DateTime.MinValue;
             visitStartedAt = DateTime.MinValue;
+            recheck = false;
+            retryNotBefore = DateTime.MinValue;
             lastSpoken.Clear();
             return;
         }
@@ -512,8 +577,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
                       now - visitStartedAt >= TimeSpan.FromSeconds(SettleSeconds);
 
         if (!CaptureHere(manual: false, announce: first, windowIsOpen: true, settled: settled))
+        {
+            retryNotBefore = now.AddSeconds(RetrySeconds);
             return;
+        }
 
+        recheck = false;
+        retryNotBefore = DateTime.MinValue;
         capturedThisSession = here;
     }
 
@@ -589,14 +659,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // opens one only where you may edit.
         var windowOpen = windowIsOpen ?? HousingUi.IsOpen(GameGui, out _);
 
-        if (!HousingReader.CanIndexHere(windowOpen, out var why, Config.RecordSharedEstates))
-        {
-            if (manual) ChatGui.PrintError($"[FMF] Not recording here: {why}.");
-            return false;
-        }
-
         // A shared estate is somebody else's. Off by default, and walking into one then
         // also clears anything recorded about it before that rule existed.
+        //
+        // First, because the general check below refuses a shared estate too and returns -
+        // sitting after it, this never ran and those old records were never cleared.
         if (!Config.RecordSharedEstates && HousingReader.IsSharedEstate())
         {
             var id = HousingReader.CurrentKeyId(windowOpen);
@@ -605,6 +672,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (manual)
                 ChatGui.PrintError("[FMF] This is a shared estate, and \"Record estates you " +
                                    "have editing rights on\" is off in Settings.");
+            return false;
+        }
+
+        if (!HousingReader.CanIndexHere(windowOpen, out var why, Config.RecordSharedEstates))
+        {
+            if (manual) ChatGui.PrintError($"[FMF] Not recording here: {why}.");
             return false;
         }
 
@@ -626,17 +699,42 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         // The storeroom reports itself loaded a moment before it is filled, so a read can
-        // land on an empty one and look like an emptied one. Keeping the old contents is
-        // the safe mistake: a storeroom you really did empty is re-read a tick later and
-        // records its zero honestly, whereas writing this one away loses the lot silently.
-        if (Config.Properties.TryGetValue(snap.Key.Id, out var before)
+        // land on an empty one and look like an emptied one. One empty read is therefore
+        // not believed - but one that is still empty a couple of seconds later is. This
+        // used to refuse every time, on the theory that a later read would "record its
+        // zero honestly"; no later read was ever treated differently, so taking the last
+        // thing out of a storeroom left the index listing the old contents for good.
+        var readsEmptied = Config.Properties.TryGetValue(snap.Key.Id, out var before)
             && snap.StoreroomLoaded && before.StoreroomLoaded
             && snap.Pieces.Count(x => !SpotNames.IsPlaced(x.Where)) == 0
             && before.Pieces.Count(x => !SpotNames.IsPlaced(x.Where)) > 0
-            && !manual)
+            && !manual;
+
+        if (!readsEmptied)
         {
-            Log.Debug($"[FMF] {snap.Address}: storeroom read back empty; kept the previous contents.");
-            return false;
+            emptyStoreKey = string.Empty;
+        }
+        else
+        {
+            var nowUtc = DateTime.UtcNow;
+
+            if (emptyStoreKey != snap.Key.Id)
+            {
+                emptyStoreKey = snap.Key.Id;
+                emptyStoreSince = nowUtc;
+            }
+
+            if ((nowUtc - emptyStoreSince).TotalSeconds < EmptyStoreroomSettle)
+            {
+                // Ask the watcher back: the containers will not change again to prompt it.
+                recheck = true;
+                Log.Debug($"[FMF] {snap.Address}: storeroom read back empty; waiting to see " +
+                          "whether it stays that way.");
+                return false;
+            }
+
+            emptyStoreKey = string.Empty;
+            Log.Debug($"[FMF] {snap.Address}: storeroom has stayed empty; recording it as emptied.");
         }
 
         // A read that caught none of the placed containers says nothing about this house,
@@ -663,15 +761,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (placed > cap.Placed || stored > cap.Stored)
         {
-            Log.Warning($"[FMF] Refused {placed} placed / {stored} stored at {snap.Address}; " +
-                        $"{snap.Estate?.ToString() ?? "this property"} holds at most " +
-                        $"{cap.Placed}/{cap.Stored}.");
+            var refusal = $"The game returned {placed:N0} placed and {stored:N0} stored, but " +
+                          $"this property holds at most {cap.Placed}/{cap.Stored}. That is " +
+                          "another estate's contents, so nothing was recorded.";
 
-            if (manual || announce)
-                ChatGui.PrintError($"[FMF] The game returned {placed:N0} placed and {stored:N0} " +
-                                   $"stored, but this property holds at most {cap.Placed}/" +
-                                   $"{cap.Stored}. That is another estate's contents, so nothing " +
-                                   "was recorded.");
+            // Once per reading, not once per look. The watcher comes back to a refused
+            // property, and the same refusal is not news the second time.
+            var alreadySaid = lastSpoken.TryGetValue(snap.Key.Id, out var said) && said == refusal;
+
+            if (manual || !alreadySaid)
+            {
+                lastSpoken[snap.Key.Id] = refusal;
+
+                Log.Warning($"[FMF] Refused {placed} placed / {stored} stored at {snap.Address}; " +
+                            $"{snap.Estate?.ToString() ?? "this property"} holds at most " +
+                            $"{cap.Placed}/{cap.Stored}.");
+
+                if (manual || announce) ChatGui.PrintError($"[FMF] {refusal}");
+            }
+
             return false;
         }
 
@@ -751,7 +859,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void ClaimRetainers(string who)
     {
         if (who == claimedRetainersFor) return;
-        claimedRetainersFor = who;
 
         try
         {
@@ -760,6 +867,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             var changed = false;
             var count = manager->GetRetainerCount();
+
+            // The list is empty until the game has sent it, which is not at login. Marking
+            // the character done on an empty list meant the one attempt of the session was
+            // spent before there was anything to read.
+            if (count == 0) return;
+            claimedRetainersFor = who;
 
             for (uint i = 0; i < count; i++)
             {
@@ -927,7 +1040,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Log.Information($"[FMF] housing window open: {housingOpen}" +
                         (housingOpen ? $" ({openAddon})" : string.Empty));
 
-        foreach (var name in HousingUi.Candidates)
+        foreach (var name in HousingUi.Diagnostics)
         {
             var ptr = GameGui.GetAddonByName(name);
             if (ptr != nint.Zero)

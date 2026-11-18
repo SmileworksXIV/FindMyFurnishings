@@ -2,7 +2,7 @@
 
 A Dalamud plugin for FFXIV that keeps a searchable index of your furnishings across every
 estate you own — what is placed, what is in a storeroom, and what is sitting in your bags,
-retainers or the Free Company chest.
+saddlebag or retainers.
 
 The game only holds furnishing data for the property you are standing in, so this is an
 index built from visits rather than a live query. Open a property's Housing window and it
@@ -25,7 +25,7 @@ Then `/xlplugins` → search for **Find My Furnishings** → Install.
 | `/fmf` or `/fsearch` | Open the window |
 | `/fmf <text>` | Search |
 | `/fmf here` | Record this property now |
-| `/fmf bags` | Rescan bags, saddlebag, retainers and the chest |
+| `/fmf bags` | Rescan bags, saddlebag and retainers |
 | `/fmf dump` | Write diagnostics to the log, for reporting a problem |
 
 Full instructions are on the plugin's own Instructions tab.
@@ -33,9 +33,9 @@ Full instructions are on the plugin's own Instructions tab.
 ## What it records, and what it will not
 
 Only records estates you own, or a Free Company estate you have editing access to. **Shared
-estates are never recorded**. 
+estates are not recorded** unless you turn that on in Settings.
 
-Only furnishing items are indexed. Everything else in your bags and chests is ignored.
+Only furnishing items are indexed. Everything else in your bags and retainers is ignored.
 
 Everything the plugin knows lives in a configuration file on your own computer and is
 never sent anywhere. Use the "Remove" tab to remove all data.

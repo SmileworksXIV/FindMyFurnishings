@@ -16,6 +16,12 @@ namespace FindMyFurnishings;
 /// Several addon names are tried because only the game knows what it calls these windows;
 /// a name that does not exist simply never matches, which fails safe by recording nothing
 /// rather than recording the wrong thing. /fmf dump prints whichever ones are open.
+///
+/// Only windows the game opens for somebody who may EDIT the property belong here, because
+/// this list is also the access check. It used to include the estate placard, the ward and
+/// room pickers and the chocobo saddlebag - windows anyone can open standing in anyone's
+/// house - and with one of those up, the stale containers described above were filed under
+/// a property that was merely being visited.
 /// </summary>
 public static class HousingUi
 {
@@ -27,6 +33,15 @@ public static class HousingUi
         "HousingEditInterior",
         "HousingEditExterior",
         "HousingStoreroom",
+    ];
+
+    /// <summary>
+    /// Every housing-related window /fmf dump reports on, including the ones that prove
+    /// nothing about editing rights. For diagnosis only; never a reason to record.
+    /// </summary>
+    public static readonly string[] Diagnostics =
+    [
+        .. Candidates,
         "HousingSelectBlock",
         "HousingSelectRoom",
         "HousingPortal",

@@ -28,11 +28,30 @@ public sealed class MainWindow : Window
         };
     }
 
+    /// <summary>Set by /fmf &lt;text&gt;, so the Search tab comes forward once.</summary>
+    private bool selectSearch;
+
+    /// <summary>
+    /// Opens the window on the Search tab with this already typed in. What "/fmf oak bed"
+    /// was always described as doing.
+    /// </summary>
+    public void SearchFor(string text)
+    {
+        search = text.Length > 100 ? text[..100] : text;
+        selectSearch = true;
+        IsOpen = true;
+    }
+
     public override void Draw()
     {
         if (ImGui.BeginTabBar("##fmftabs"))
         {
-            if (ImGui.BeginTabItem("Search")) { DrawSearch(); ImGui.EndTabItem(); }
+            // Only on the frame it was asked for: left set, the tab would snap back to
+            // Search every time another one was clicked.
+            var searchFlags = selectSearch ? ImGuiTabItemFlags.SetSelected : ImGuiTabItemFlags.None;
+            selectSearch = false;
+
+            if (ImGui.BeginTabItem("Search", searchFlags)) { DrawSearch(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Furnishings")) { DrawPlaces(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Settings")) { DrawSettings(); ImGui.EndTabItem(); }
             if (ImGui.BeginTabItem("Removal")) { DrawRemoval(); ImGui.EndTabItem(); }
@@ -579,24 +598,16 @@ public sealed class MainWindow : Window
         var name = p.CustomName;
         ImGui.SetNextItemWidth(240);
         if (ImGui.InputTextWithHint($"##name{p.Key.Id}", "Call it something else...", ref name, 60))
-        {
             p.CustomName = name;
-            Cfg.Save(Plugin.PluginInterface);
-        }
 
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(150);
-        if (ImGui.BeginCombo($"##sec{p.Key.Id}", SectionNames.Label(p.Section)))
-        {
-            foreach (var sec in SectionNames.All)
-                if (ImGui.Selectable(SectionNames.Label(sec), sec == p.Section))
-                {
-                    p.Section = sec;
-                    p.SectionPinned = true;
-                    Cfg.Save(Plugin.PluginInterface);
-                }
-            ImGui.EndCombo();
-        }
+        // Written when you finish typing, not on every key. A save serialises the whole
+        // index, and a twelve-letter name used to do that twelve times.
+        if (ImGui.IsItemDeactivatedAfterEdit())
+            Cfg.Save(Plugin.PluginInterface);
+
+        // There was a section picker here. The list is grouped by character now and reads
+        // nothing from a property's section, so the picker changed a value that nothing
+        // looked at.
 
         DrawTable($"##t{p.Key.Id}", Sorted(shown.Select(x =>
             new Hit(p.Label, p.TakenUtc, p.Partial, x))), showLocation: false);
@@ -668,7 +679,7 @@ public sealed class MainWindow : Window
         {
             ImGui.Spacing();
             ImGui.Separator();
-            ImGui.TextColored(Heading, "Bags, retainers and chests");
+            ImGui.TextColored(Heading, "Bags and retainers");
             ImGui.TextDisabled("These rebuild themselves the next time they are open.");
             ImGui.Spacing();
 
@@ -694,7 +705,7 @@ public sealed class MainWindow : Window
             Cfg.ForgetEverything();
             Cfg.Save(Plugin.PluginInterface);
         }
-        ImGui.TextDisabled("Clears every property, bag, retainer and chest above.");
+        ImGui.TextDisabled("Clears every property, bag and retainer above.");
     }
 
     /// <summary>
@@ -722,14 +733,9 @@ public sealed class MainWindow : Window
                               "missing. Open the storeroom while standing there and this fills in.");
     }
 
-    /// <summary>
-    /// Alphabetical by name, then by dye - so four Wooden Handrails sit together and the
-    /// Soot Black ones are not scattered through the Gobbiebag Browns.
-    /// </summary>
+    /// <summary>Alphabetical by name, so four Wooden Handrails sit together.</summary>
     private static List<Hit> Sorted(IEnumerable<Hit> rows) =>
-        rows.OrderBy(h => h.Piece.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(h => h.Piece.StainName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        rows.OrderBy(h => h.Piece.Name, StringComparer.OrdinalIgnoreCase).ToList();
 
     // ---------- shared table ----------
 
@@ -773,7 +779,6 @@ public sealed class MainWindow : Window
     private void DrawTable(string id, List<Hit> rows, bool showLocation)
     {
         var cols = showLocation ? 5 : 4;
-        var full = false;
         var shown = Grouped(rows);
 
         // A scrolling table claims the rest of the window whether it needs the room or
@@ -794,6 +799,8 @@ public sealed class MainWindow : Window
         if (showLocation) ImGui.TableSetupColumn("Property", ImGuiTableColumnFlags.WidthStretch, 2);
         ImGui.TableHeadersRow();
 
+        var index = 0;
+
         foreach (var (row, count) in shown)
         {
             var p = row.Piece;
@@ -801,10 +808,17 @@ public sealed class MainWindow : Window
 
             ImGui.TableNextColumn();
             var keep = Cfg.IsWatched(p.ItemId);
-            if (ImGui.Checkbox($"##keep{p.ItemId}_{row.Location}_{p.Detail}", ref keep))
+
+            // Numbered by row. Built from the item and its location, two rows could share
+            // an id - the same chair placed and stored in one property - and the two boxes
+            // then behaved as one.
+            if (ImGui.Checkbox($"##keep{index++}", ref keep))
             {
                 if (!Cfg.ToggleWatched(p.ItemId))
-                    full = true;
+                {
+                    listFullUntil = DateTime.UtcNow.AddSeconds(5);
+                    listFullTable = id;
+                }
                 else
                     Cfg.Save(Plugin.PluginInterface);
             }
@@ -823,12 +837,6 @@ public sealed class MainWindow : Window
             ImGui.TableNextColumn();
             if (stored) ImGui.TextColored(Stored, label);
             else ImGui.TextUnformatted(label);
-
-            if (!string.IsNullOrEmpty(p.StainName))
-            {
-                ImGui.SameLine();
-                ImGui.TextDisabled($"({p.StainName})");
-            }
 
             ImGui.TableNextColumn();
             var where = string.IsNullOrEmpty(p.Detail)
@@ -858,10 +866,15 @@ public sealed class MainWindow : Window
 
         ImGui.EndTable();
 
-        if (full)
+        // Held on screen for a few seconds. Shown only on the frame of the click, it was
+        // gone before it could be read.
+        if (listFullTable == id && DateTime.UtcNow < listFullUntil)
             ImGui.TextColored(Warn, $"The remembered list holds {Configuration.WatchLimit} items. " +
                                     "Clear something from it first.");
     }
+
+    private DateTime listFullUntil = DateTime.MinValue;
+    private string listFullTable = string.Empty;
 
     // ---------- instructions ----------
 
@@ -890,7 +903,8 @@ public sealed class MainWindow : Window
 
         ImGui.Spacing();
         ImGui.TextWrapped("Only furnishing items will be logged.");
-        ImGui.TextWrapped("Shared estates - estates that you do not own - will never be recorded.");
+        ImGui.TextWrapped("Shared estates - estates that you do not own - are only recorded if " +
+                          "you turn that on in the Settings tab.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -940,7 +954,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         ImGui.TextColored(Stored, "Yellow");
         ImGui.SameLine();
-        ImGui.TextWrapped("is stored, white is placed. Dyes show in brackets.");
+        ImGui.TextWrapped("is stored, white is placed.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -949,7 +963,7 @@ public sealed class MainWindow : Window
         Point("/fmf or /fsearch - open the window");
         Point("/fmf <text> - search");
         Point("/fmf here - record this property now");
-        Point("/fmf bags - rescan bags, saddlebag, retainers and the chest");
+        Point("/fmf bags - rescan bags, saddlebag and retainers");
         Point("/fmf dump - write diagnostics to the log, for reporting a problem");
 
         ImGui.Spacing();
@@ -968,8 +982,9 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped("A property records itself when you open its Housing window, and again " +
                           "when the Storeroom loads. Nothing is captured as you walk around.");
         ImGui.Spacing();
-        ImGui.TextWrapped("Only estates you own are ever recorded. Shared estates are excluded, " +
-                          "and a property you are simply visiting is not recorded at all.");
+        ImGui.TextWrapped("Estates you own are recorded. Shared estates are left out unless you " +
+                          "turn them on below, and a property you are simply visiting is never " +
+                          "recorded.");
 
         ImGui.Separator();
 

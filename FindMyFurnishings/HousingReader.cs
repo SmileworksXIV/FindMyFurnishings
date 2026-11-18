@@ -266,6 +266,7 @@ public sealed unsafe class HousingReader
     /// plugin actually performs rather than a parallel one that might differ.
     /// </summary>
     private static ulong estateCacheId;
+    private static short estateCacheRoom;
     private static EstateType? estateCacheValue;
     private static string estateCacheDiagnosis = string.Empty;
     private static DateTime estateCacheAt = DateTime.MinValue;
@@ -281,16 +282,31 @@ public sealed unsafe class HousingReader
     /// </summary>
     public static EstateType? EstateOf(ulong houseId, out string diagnosis)
     {
-        if (houseId != 0 && houseId == estateCacheId
+        // Nowhere, so nothing to ask about - and asked without the cache every time, since
+        // a zero id was never remembered. That was the game function being called from
+        // places with no property under them at all.
+        if (houseId == 0)
+        {
+            diagnosis = "not in a property";
+            return null;
+        }
+
+        // The room is part of the question. Whether an unmatched property is a chamber
+        // depends on standing in one, so an answer worked out in the hall must not be
+        // handed back a moment later in a room off it.
+        var room = CurrentRoomOrZero();
+
+        if (houseId == estateCacheId && room == estateCacheRoom
             && DateTime.UtcNow - estateCacheAt < TimeSpan.FromSeconds(10))
         {
             diagnosis = estateCacheDiagnosis;
             return estateCacheValue;
         }
 
-        var answer = EstateOfUncached(houseId, out diagnosis);
+        var answer = EstateOfUncached(houseId, room, out diagnosis);
 
         estateCacheId = houseId;
+        estateCacheRoom = room;
         estateCacheValue = answer;
         estateCacheDiagnosis = diagnosis;
         estateCacheAt = DateTime.UtcNow;
@@ -298,7 +314,13 @@ public sealed unsafe class HousingReader
         return answer;
     }
 
-    private static EstateType? EstateOfUncached(ulong houseId, out string diagnosis)
+    private static short CurrentRoomOrZero()
+    {
+        var mgr = HousingManager.Instance();
+        return mgr == null ? (short)0 : mgr->GetCurrentRoom();
+    }
+
+    private static EstateType? EstateOfUncached(ulong houseId, short room, out string diagnosis)
     {
         diagnosis = "no telepo";
 
@@ -341,8 +363,44 @@ public sealed unsafe class HousingReader
                 if (e->HouseId.Id == houseId) { diagnosis += ", exact match"; return e->EstateType; }
             }
 
+            // Indoors the id carries the INTERIOR's territory, which no teleport entry
+            // has, so the hall of an estate you own never matches exactly. Compared again
+            // with the territory left out. Only a single match counts: the same ward and
+            // plot numbers exist in every district, and two entries agreeing on everything
+            // but the district cannot say which one this is.
+            var territoryBits = new HouseId { TerritoryTypeId = ushort.MaxValue }.Id;
+            EstateType? loose = null;
+            var looseMatches = 0;
+
+            for (var i = 0; i < count; i++)
+            {
+                var e = first + i;
+                if (!Filled(e)) continue;
+                if ((e->HouseId.Id & ~territoryBits) != (houseId & ~territoryBits)) continue;
+
+                loose = e->EstateType;
+                looseMatches++;
+            }
+
+            if (looseMatches == 1)
+            {
+                diagnosis += ", match ignoring territory";
+                return loose;
+            }
+
+            // A chamber is a room. This used to call ANY unmatched property in the same
+            // ward as an estate of yours a chamber - which named the hall itself, and an
+            // apartment in that ward, "Free Company Chamber" and read only 150 of their
+            // slots. Standing in a numbered room that is not an apartment is what makes it
+            // one; anything else unmatched is simply not identified.
+            if (room <= 0 || here.IsApartment)
+            {
+                diagnosis += ", no entry for this property and not in a chamber";
+                return null;
+            }
+
             // A Free Company chamber has no teleport entry of its own - you reach it
-            // through the estate. So an unmatched property in the same world and ward as
+            // through the estate. So an unmatched room in the same world and ward as
             // exactly one estate you own is a chamber inside it. Shared estates are left
             // out of that count: chambers do not exist in them, and counting them would
             // make a guest's ward look ambiguous.
@@ -642,15 +700,19 @@ public sealed unsafe class HousingReader
     {
         var parts = new List<string> { District(k.TerritoryTypeId) };
 
-        if (k.Ward > 0) parts.Add($"Ward {k.Ward}");
+        // The game counts wards and plots from zero and its own windows count from one,
+        // so both are shifted for display - printed raw, every address was one short of
+        // the placard and Ward 1 and Plot 1 vanished altogether. The stored key keeps the
+        // game's numbers; only what is shown changes. Negative means "not on one".
+        if (k.Ward >= 0) parts.Add($"Ward {k.Ward + 1}");
         if (k.Division == 2) parts.Add("Subdivision");
 
         if (k.IsApartment)
             parts.Add(k.Room > 0 ? $"Apartment {k.Room}" : "Apartment");
         else if (k.Room > 0)
             parts.Add($"Room {k.Room}");
-        else if (k.Plot > 0)
-            parts.Add($"Plot {k.Plot}");
+        else if (k.Plot >= 0)
+            parts.Add($"Plot {k.Plot + 1}");
 
         return string.Join(", ", parts);
     }

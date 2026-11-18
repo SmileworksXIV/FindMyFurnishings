@@ -89,13 +89,109 @@ public sealed unsafe class InventoryScanner
     /// </summary>
     public HoldingSnapshot? Retainer(string owner)
     {
-        var name = ActiveRetainerName();
-        if (string.IsNullOrEmpty(name)) return null;
+        try
+        {
+            var m = RetainerManager.Instance();
+            if (m == null) return null;
 
-        // A retainer is only reachable with its window up, so an empty read here is a real
-        // empty read.
-        return Read($"retainer.{name}", $"{name} (retainer)", RetainerBags, Spot.Retainer,
-                    "Page", Section.Retainers, trustEmpty: true, owner: owner);
+            var r = m->GetActiveRetainer();
+            if (r == null)
+            {
+                trustedRetainer = 0;
+                candidateRetainer = 0;
+                return null;
+            }
+
+            var name = r->NameString;
+            if (string.IsNullOrEmpty(name)) return null;
+
+            if (!BagsBelongTo(r->RetainerId, r->ItemCount, name)) return null;
+
+            // A retainer is only reachable with its window up, so an empty read here is a
+            // real empty read.
+            return Read($"retainer.{name}", $"{name} (retainer)", RetainerBags, Spot.Retainer,
+                        "Page", Section.Retainers, trustEmpty: true, owner: owner);
+        }
+        catch (Exception ex)
+        {
+            log.Warning($"[FMF] Could not read the open retainer: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>The retainer whose bags have been confirmed as their own this visit.</summary>
+    private ulong trustedRetainer;
+
+    /// <summary>A retainer that has been selected but whose bags are not yet believed.</summary>
+    private ulong candidateRetainer;
+    private DateTime candidateSince = DateTime.MinValue;
+
+    /// <summary>
+    /// How long to wait for a retainer's bags to agree with their item count before taking
+    /// them as they are.
+    /// </summary>
+    private static readonly TimeSpan RetainerSettle = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Whether the retainer bags on the client are this retainer's yet.
+    ///
+    /// The client holds one retainer's bags at a time and does not clear them between
+    /// retainers. Open a second one straight after the first and, until the server has
+    /// answered, the game names the new retainer while the bags still hold the old one's
+    /// things - which is how one retainer's furnishings were briefly filed under another.
+    ///
+    /// The retainer list carries each retainer's item count, so the bags are believed once
+    /// they hold that many. The count is only used for this first look: it is not kept up
+    /// to date while you move things in and out, so once a retainer's bags have been
+    /// accepted they are trusted until a different retainer is opened. And if the two
+    /// numbers never agree, the bags are taken as they stand after a few seconds - late is
+    /// better than never recording a retainer at all.
+    /// </summary>
+    private bool BagsBelongTo(ulong retainerId, int expectedItems, string name)
+    {
+        if (retainerId == trustedRetainer) return true;
+
+        var now = DateTime.UtcNow;
+
+        if (retainerId != candidateRetainer)
+        {
+            candidateRetainer = retainerId;
+            candidateSince = now;
+        }
+
+        var held = OccupiedSlots(RetainerBags);
+
+        if (held != expectedItems && now - candidateSince < RetainerSettle)
+        {
+            log.Debug($"[FMF] {name}: bags hold {held} item(s), the retainer has " +
+                      $"{expectedItems} - still the previous retainer's, waiting.");
+            return false;
+        }
+
+        trustedRetainer = retainerId;
+        return true;
+    }
+
+    private static int OccupiedSlots(InventoryType[] pages)
+    {
+        var inv = InventoryManager.Instance();
+        if (inv == null) return 0;
+
+        var used = 0;
+
+        foreach (var page in pages)
+        {
+            var c = inv->GetInventoryContainer(page);
+            if (c == null || !c->IsLoaded) continue;
+
+            for (var s = 0; s < c->Size; s++)
+            {
+                var slot = c->GetInventorySlot(s);
+                if (slot != null && slot->ItemId != 0) used++;
+            }
+        }
+
+        return used;
     }
 
     /// <summary>Whether a retainer is open, without paying for its name.</summary>
@@ -109,26 +205,6 @@ public sealed unsafe class InventoryScanner
         catch
         {
             return false;
-        }
-    }
-
-    /// <summary>
-    /// Name of the retainer at the counter. Empty when none is open, which is also the
-    /// signal not to try reading retainer bags at all.
-    /// </summary>
-    private static string ActiveRetainerName()
-    {
-        try
-        {
-            var m = RetainerManager.Instance();
-            if (m == null) return string.Empty;
-
-            var r = m->GetActiveRetainer();
-            return r == null ? string.Empty : r->NameString;
-        }
-        catch
-        {
-            return string.Empty;
         }
     }
 

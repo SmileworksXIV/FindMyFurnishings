@@ -13,7 +13,7 @@ Then add `bin\Release` as a dev plugin location in Dalamud, same as the others.
 |---|---|
 | `/fmf` | Opens the window |
 | `/fmf here` | Records the property you are standing in, now |
-| `/fmf bags` | Rescans bags, saddlebag and FC chest |
+| `/fmf bags` | Rescans bags, saddlebag and retainers |
 | `/fmf dump` | Writes diagnostics to `/xllog` |
 | `/fmf <text>` | Opens the window to search |
 
