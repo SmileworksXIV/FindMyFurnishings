@@ -1,0 +1,29 @@
+[
+  {
+    "Author": "Smileworks",
+    "Name": "Find My Furnishings",
+    "InternalName": "FindMyFurnishings",
+    "AssemblyVersion": "0.1.3.1",
+    "Punchline": "Where did I put that lamp?",
+    "Description": "Keeps a searchable index of all furnishing items across all owned characters' inventories and estates for which you have housing editing privileges.",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "RepoUrl": "https://github.com/SmileworksXIV/FindMyFurnishings",
+    "IconUrl": "https://raw.githubusercontent.com/SmileworksXIV/FindMyFurnishings/main/FindMyFurnishings/images/icon.png",
+    "DownloadLinkInstall": "https://github.com/SmileworksXIV/FindMyFurnishings/releases/download/0.1.3.1/latest.zip",
+    "DownloadLinkUpdate": "https://github.com/SmileworksXIV/FindMyFurnishings/releases/download/0.1.3.1/latest.zip",
+    "DownloadLinkTesting": "https://github.com/SmileworksXIV/FindMyFurnishings/releases/download/0.1.3.1/latest.zip",
+    "DownloadCount": 0,
+    "LastUpdate": 1795428499,
+    "Tags": [
+      "housing",
+      "furniture",
+      "furnishing",
+      "search",
+      "inventory",
+      "decorating"
+    ]
+  }
+]
