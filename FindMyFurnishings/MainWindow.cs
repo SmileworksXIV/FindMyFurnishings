@@ -15,6 +15,25 @@ public sealed class MainWindow : Window
     private readonly Plugin plugin;
     private string search = string.Empty;
 
+    /// <summary>
+    /// Set by clicking a furnishing's name: the search is then for that one item, not for
+    /// everything with its name in theirs. It holds only while the box still reads exactly
+    /// that name, so typing anything else goes back to an ordinary search.
+    /// </summary>
+    private uint onlyItemId;
+    private string onlyItemName = string.Empty;
+
+    private uint OnlyItem(string q) =>
+        onlyItemId != 0 && q.Trim() == onlyItemName ? onlyItemId : 0;
+
+    private void SearchForItem(Piece piece)
+    {
+        onlyItemId = piece.ItemId;
+        onlyItemName = piece.Name.Trim();
+        search = onlyItemName;
+        selectSearch = true;
+    }
+
     /// <summary>The index, or the stand-in copy of it while screenshot mode is on.</summary>
     private Configuration Cfg => plugin.Demo.Config ?? plugin.Config;
 
@@ -88,6 +107,7 @@ public sealed class MainWindow : Window
     public void SearchFor(string text)
     {
         search = text.Length > 100 ? text[..100] : text;
+        onlyItemId = 0;
         selectSearch = true;
         IsOpen = true;
     }
@@ -149,8 +169,8 @@ public sealed class MainWindow : Window
             if (hidden > 0)
             {
                 ImGui.TextColored(Warn,
-                    line + $" {hidden:N0} more {(hidden == 1 ? "is" : "are")} placed and hidden " +
-                           "by \"View stored items only\".");
+                    line + $" {hidden:N0} placed {(hidden == 1 ? "furnishing is" : "furnishings are")} " +
+                           "hidden by \"View stored items only\".");
             }
             else
             {
@@ -240,12 +260,16 @@ public sealed class MainWindow : Window
     /// changed: a different query, a different filter, or an index that has been written
     /// to since. Otherwise the previous results stand and the frame costs nothing.
     /// </summary>
+    private uint cachedOnly;
+
     private void Refresh(string q)
     {
         if (cachedQuery == q && cachedFilter == Cfg.SearchStoredOnly
+            && cachedOnly == OnlyItem(q)
             && cachedRevision == Configuration.Revision)
             return;
 
+        cachedOnly = OnlyItem(q);
         cachedQuery = q;
         cachedFilter = Cfg.SearchStoredOnly;
         cachedRevision = Configuration.Revision;
@@ -270,6 +294,7 @@ public sealed class MainWindow : Window
         var skipped = 0;
 
         var needle = q.Trim();
+        var only = OnlyItem(q);
         var hits = new List<Hit>();
         var hiding = Cfg.SearchStoredOnly;
         var hidden = 0;
@@ -277,7 +302,9 @@ public sealed class MainWindow : Window
         void Consider(string source, string label, DateTime taken, bool partial, Piece piece,
                       bool inScope, PlaceKind kind)
         {
-            if (!piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)) return;
+            if (only != 0 ? piece.ItemId != only
+                          : !piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase))
+                return;
 
             if (!inScope)
             {
@@ -1366,6 +1393,7 @@ public sealed class MainWindow : Window
         ImGui.TableHeadersRow();
 
         var index = 0;
+        Piece? picked = null;
 
         // How many of each furnishing the whole list holds, and over how many rows. Only
         // for search results: there the same item turns up in several places, and the
@@ -1419,6 +1447,14 @@ public sealed class MainWindow : Window
             ImGui.TableNextColumn();
             Colored(tint, label);
 
+            // The name is a link: click it and the search narrows to this one furnishing.
+            if (ImGui.IsItemHovered())
+            {
+                ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
+                ImGui.SetTooltip("Click to search for this furnishing only.");
+                if (ImGui.IsMouseClicked(ImGuiMouseButton.Left)) picked = p;
+            }
+
             // Only where it adds something: one row already shows its own count.
             if (totals != null && totals.TryGetValue(p.ItemId, out var sum) && sum.Rows > 1)
             {
@@ -1452,6 +1488,9 @@ public sealed class MainWindow : Window
         }
 
         ImGui.EndTable();
+
+        // After the table is closed, because this changes what the next frame draws.
+        if (picked != null) SearchForItem(picked);
 
         // Held on screen for a few seconds. Shown only on the frame of the click, it was
         // gone before it could be read.
