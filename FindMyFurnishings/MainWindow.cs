@@ -130,6 +130,13 @@ public sealed class MainWindow : Window
 
         if (!searching) return;
 
+        // Said whether or not anything else matched: the copy someone is looking for may
+        // be the one in a character they unticked last week.
+        if (cachedOutOfScope > 0)
+            ImGui.TextColored(Warn,
+                $"{cachedOutOfScope:N0} more {(cachedOutOfScope == 1 ? "match is" : "matches are")} " +
+                "in a character or estate type that is unticked under \"Search in\".");
+
         if (hits!.Count == 0)
         {
             if (hidden > 0)
@@ -156,6 +163,9 @@ public sealed class MainWindow : Window
     /// </summary>
     private List<Hit> cachedHits = new();
     private int cachedHidden;
+
+    /// <summary>Matches in a character or kind of estate that "Search in" has switched off.</summary>
+    private int cachedOutOfScope;
     private string cachedQuery = "\u0000";
     private bool cachedFilter;
     private int cachedRevision = -1;
@@ -175,7 +185,8 @@ public sealed class MainWindow : Window
         cachedFilter = Cfg.SearchStoredOnly;
         cachedRevision = Configuration.Revision;
 
-        cachedHits = q.Length == 0 ? new List<Hit>() : Find(q, out cachedHidden);
+        cachedOutOfScope = 0;
+        cachedHits = q.Length == 0 ? new List<Hit>() : Find(q, out cachedHidden, out cachedOutOfScope);
         if (q.Length == 0) cachedHidden = 0;
     }
 
@@ -185,16 +196,29 @@ public sealed class MainWindow : Window
     /// shows none of them looks exactly like a search that found nothing, so the number
     /// is needed, but it is not worth a second walk of the whole index for.
     /// </param>
-    private List<Hit> Find(string q, out int hiddenByFilter)
+    /// <param name="outOfScope">
+    /// How many matches sit somewhere "Search in" has switched off. Counted for the same
+    /// reason: an unticked character with the only copy looks exactly like owning none.
+    /// </param>
+    private List<Hit> Find(string q, out int hiddenByFilter, out int outOfScope)
     {
+        var skipped = 0;
+
         var needle = q.Trim();
         var hits = new List<Hit>();
         var hiding = Cfg.SearchStoredOnly;
         var hidden = 0;
 
-        void Consider(string source, string label, DateTime taken, bool partial, Piece piece)
+        void Consider(string source, string label, DateTime taken, bool partial, Piece piece,
+                      bool inScope)
         {
             if (!piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)) return;
+
+            if (!inScope)
+            {
+                skipped++;
+                return;
+            }
 
             if (hiding && SpotNames.IsPlaced(piece.Where))
             {
@@ -209,23 +233,24 @@ public sealed class MainWindow : Window
 
         foreach (var p in Cfg.Properties.Values)
         {
-            if (!Searchable(p, companyEstates)) continue;
+            var inScope = Searchable(p, companyEstates);
 
             var source = "p:" + p.Key.Id;
             foreach (var piece in p.Pieces)
-                Consider(source, p.Label, p.TakenUtc, p.Partial, piece);
+                Consider(source, p.Label, p.TakenUtc, p.Partial, piece, inScope);
         }
 
         foreach (var h in Cfg.Holdings.Values)
         {
-            if (!Searchable(h)) continue;
+            var inScope = Searchable(h);
 
             var source = "h:" + h.Id;
             foreach (var piece in h.Pieces)
-                Consider(source, h.DisplayName, h.TakenUtc, h.Partial, piece);
+                Consider(source, h.DisplayName, h.TakenUtc, h.Partial, piece, inScope);
         }
 
         hiddenByFilter = hidden;
+        outOfScope = skipped;
 
         return hits
             .OrderByDescending(h => h.Piece.Name.StartsWith(needle, StringComparison.OrdinalIgnoreCase))
