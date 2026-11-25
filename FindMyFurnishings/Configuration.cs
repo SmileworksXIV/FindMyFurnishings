@@ -67,6 +67,7 @@ public class Configuration : IPluginConfiguration
     // --- Row colours. Storeroom wins: a stored piece is written in the storeroom colour
     // --- wherever it is, and the other four apply to pieces that are not stored.
     public TextColor ColorStoreroom { get; set; } = new() { R = 0.992f, G = 0.992f, B = 0.4f };
+    public TextColor ColorInventory { get; set; } = new();
     public TextColor ColorRetainers { get; set; } = new();
     public TextColor ColorOwned { get; set; } = new();
     public TextColor ColorCompany { get; set; } = new();
@@ -76,6 +77,7 @@ public class Configuration : IPluginConfiguration
     public void ResetColors()
     {
         ColorStoreroom.Set(0.992f, 0.992f, 0.4f);
+        ColorInventory.Set(1f, 1f, 1f);
         ColorRetainers.Set(1f, 1f, 1f);
         ColorOwned.Set(1f, 1f, 1f);
         ColorCompany.Set(1f, 1f, 1f);

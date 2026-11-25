@@ -818,7 +818,6 @@ public sealed class MainWindow : Window
     /// The colour a row is written in, from Settings. A stored piece takes the storeroom
     /// colour whatever kind of estate it is in - "is it out or put away" is the question
     /// the tint was first added to answer - and everything else goes by where it is.
-    /// Null for bags and the saddlebag, which stay in the window's own text colour.
     /// </summary>
     private Vector4? Tint(bool stored, PlaceKind kind)
     {
@@ -828,10 +827,10 @@ public sealed class MainWindow : Window
             PlaceKind.Owned => Cfg.ColorOwned,
             PlaceKind.Company => Cfg.ColorCompany,
             PlaceKind.Guest => Cfg.ColorGuest,
-            _ => null,
+            _ => Cfg.ColorInventory,
         };
 
-        return c == null ? null : new Vector4(c.R, c.G, c.B, 1f);
+        return new Vector4(c.R, c.G, c.B, 1f);
     }
 
     private static void Colored(Vector4? tint, string text)
@@ -1545,6 +1544,7 @@ public sealed class MainWindow : Window
         ImGui.Spacing();
 
         ColorBox("Storeroom", Cfg.ColorStoreroom);
+        ColorBox("Inventory", Cfg.ColorInventory);
         ColorBox("Retainers", Cfg.ColorRetainers);
         ColorBox("Owned Estates", Cfg.ColorOwned);
         ColorBox("Free Company Estate", Cfg.ColorCompany);

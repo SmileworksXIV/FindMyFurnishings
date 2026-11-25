@@ -55,8 +55,10 @@ public static class SpotNames
 
     public static string Label(Spot s) => s switch
     {
-        Spot.IndoorPlaced     => "Placed indoors",
-        Spot.OutdoorPlaced    => "Placed in the yard",
+        // One word for both, like the storeroom below: the house and its yard are
+        // separate entries, so the heading already says which.
+        Spot.IndoorPlaced     => "Placed",
+        Spot.OutdoorPlaced    => "Placed",
         // One name for both. Interior and exterior are separate property entries already,
         // so repeating it on every row said nothing the heading had not.
         Spot.IndoorStoreroom  => "Storeroom",
@@ -334,7 +336,7 @@ public sealed record Hit(string Source, string Location, DateTime TakenUtc, bool
 /// <summary>What sort of place a row is in, which decides the colour it is written in.</summary>
 public enum PlaceKind
 {
-    /// <summary>Bags and the saddlebag. Left in the window's ordinary text colour.</summary>
+    /// <summary>Bags and the saddlebag.</summary>
     Carried,
     Retainer,
     Owned,
