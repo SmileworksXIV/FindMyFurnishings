@@ -23,6 +23,12 @@ public class Configuration : IPluginConfiguration
     public bool SearchStoredOnly { get; set; }
 
     /// <summary>
+    /// List search results place by place instead of by item name - the order someone
+    /// walking round collecting things wants them in.
+    /// </summary>
+    public bool SearchSortByLocation { get; set; }
+
+    /// <summary>
     /// Characters left OUT of a search, as they are written in the list.
     ///
     /// Kept as the ones switched off rather than the ones switched on, so a character

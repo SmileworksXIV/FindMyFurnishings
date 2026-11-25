@@ -170,6 +170,24 @@ public sealed class MainWindow : Window
             ImGui.SetTooltip("Hides anything already placed, leaving what is in a storeroom, " +
                              "your bags or a retainer.");
 
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted("Sort by");
+        ImGui.SameLine();
+
+        if (ImGui.RadioButton("Name", !Cfg.SearchSortByLocation) && Cfg.SearchSortByLocation)
+        {
+            Cfg.SearchSortByLocation = false;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
+        ImGui.SameLine();
+
+        if (ImGui.RadioButton("Location", Cfg.SearchSortByLocation) && !Cfg.SearchSortByLocation)
+        {
+            Cfg.SearchSortByLocation = true;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
         DrawSearchFilters();
 
         ImGui.Spacing();
@@ -298,6 +316,16 @@ public sealed class MainWindow : Window
 
         hiddenByFilter = hidden;
         outOfScope = skipped;
+
+        // By place: everything in one estate or container together, in the order you
+        // would pick it up. The source id breaks ties, so two characters' apartments -
+        // both called "Apartment" - do not shuffle into each other.
+        if (Cfg.SearchSortByLocation)
+            return hits
+                .OrderBy(h => h.Location, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(h => h.Source, StringComparer.Ordinal)
+                .ThenBy(h => h.Piece.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
         return hits
             .OrderByDescending(h => h.Piece.Name.StartsWith(needle, StringComparison.OrdinalIgnoreCase))
@@ -1339,6 +1367,22 @@ public sealed class MainWindow : Window
 
         var index = 0;
 
+        // How many of each furnishing the whole list holds, and over how many rows. Only
+        // for search results: there the same item turns up in several places, and the
+        // sum across them is the number someone is usually after.
+        Dictionary<uint, (int Total, int Rows)>? totals = null;
+
+        if (showLocation)
+        {
+            totals = new Dictionary<uint, (int, int)>();
+
+            foreach (var (row, count) in shown)
+            {
+                var had = totals.GetValueOrDefault(row.Piece.ItemId);
+                totals[row.Piece.ItemId] = (had.Total + count, had.Rows + 1);
+            }
+        }
+
         foreach (var (row, count) in shown)
         {
             var p = row.Piece;
@@ -1374,6 +1418,13 @@ public sealed class MainWindow : Window
 
             ImGui.TableNextColumn();
             Colored(tint, label);
+
+            // Only where it adds something: one row already shows its own count.
+            if (totals != null && totals.TryGetValue(p.ItemId, out var sum) && sum.Rows > 1)
+            {
+                ImGui.SameLine();
+                ImGui.TextDisabled($"- {sum.Total:N0} total");
+            }
 
             ImGui.TableNextColumn();
             var where = string.IsNullOrEmpty(p.Detail)
