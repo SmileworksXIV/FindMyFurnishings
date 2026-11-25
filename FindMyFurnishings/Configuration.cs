@@ -113,6 +113,26 @@ public class Configuration : IPluginConfiguration
         return list;
     }
 
+    /// <summary>
+    /// Adds the furnishings on the remembered list to a saved list that already exists,
+    /// skipping any it already holds.
+    /// </summary>
+    /// <returns>How many were new to the list.</returns>
+    public int AddWatchedToList(SavedList list)
+    {
+        var added = 0;
+
+        foreach (var w in WatchedLines)
+        {
+            if (list.Items.Any(i => i.ItemId == w.ItemId)) continue;
+
+            list.Items.Add(new SavedItem { ItemId = w.ItemId, Name = w.Name, IconId = w.IconId });
+            added++;
+        }
+
+        return added;
+    }
+
     /// <summary>An empty list under the next free "List N" name. Not added to the saved lists.</summary>
     private SavedList NewList()
     {

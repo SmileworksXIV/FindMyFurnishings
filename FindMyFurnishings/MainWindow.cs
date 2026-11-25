@@ -619,21 +619,48 @@ public sealed class MainWindow : Window
             var clear = ImGui.Button("Clear All");
 
             ImGui.SameLine();
-            if (ImGui.Button("Save as List"))
+            if (ImGui.Button("Save as new list"))
             {
                 var made = Cfg.SaveWatchedAsList();
                 if (made != null)
                 {
                     Cfg.Save(Plugin.PluginInterface);
-                    savedListName = made.Name;
+                    savedListNote = $"Saved as \"{made.Name}\" on the Saved Lists tab.";
                     savedListUntil = DateTime.UtcNow.AddSeconds(5);
                 }
+            }
+
+            ImGui.SameLine();
+            if (ImGui.Button("Add to existing list")) ImGui.OpenPopup("addremembered");
+
+            if (ImGui.BeginPopup("addremembered"))
+            {
+                if (Cfg.SavedLists.Count == 0)
+                    ImGui.TextDisabled("No saved lists yet. Use \"Save as new list\" first.");
+
+                foreach (var list in Cfg.SavedLists)
+                {
+                    var name = string.IsNullOrWhiteSpace(list.Name) ? "Unnamed list" : list.Name;
+                    if (!ImGui.Selectable($"{name}###addrem{list.Id}")) continue;
+
+                    var added = Cfg.AddWatchedToList(list);
+                    Cfg.Save(Plugin.PluginInterface);
+
+                    // Says how many went in, because adding things a list already holds
+                    // changes nothing and would otherwise look like the button failed.
+                    savedListNote = added == 0
+                        ? $"\"{name}\" already has all of these."
+                        : $"Added {added:N0} to \"{name}\".";
+                    savedListUntil = DateTime.UtcNow.AddSeconds(5);
+                }
+
+                ImGui.EndPopup();
             }
 
             if (DateTime.UtcNow < savedListUntil)
             {
                 ImGui.SameLine();
-                ImGui.TextDisabled($"Saved as \"{savedListName}\" on the Saved Lists tab.");
+                ImGui.TextDisabled(savedListNote);
             }
 
             ImGui.Spacing();
@@ -711,7 +738,7 @@ public sealed class MainWindow : Window
     // ---------- saved lists ----------
 
     private DateTime savedListUntil = DateTime.MinValue;
-    private string savedListName = string.Empty;
+    private string savedListNote = string.Empty;
 
     /// <summary>The list whose Delete has been pressed once and is waiting for the second.</summary>
     private string deleteListId = string.Empty;
@@ -800,7 +827,7 @@ public sealed class MainWindow : Window
         if (Cfg.SavedLists.Count == 0)
         {
             ImGui.TextWrapped("No saved lists yet. Tick furnishings on the Search tab, then press " +
-                              "Save as List on the Remembered list.");
+                              "\"Save as new list\" on the Remembered list.");
             return;
         }
 
@@ -1676,9 +1703,10 @@ public sealed class MainWindow : Window
         ImGui.Separator();
         ImGui.TextColored(Heading, "Saved Lists");
         ImGui.Spacing();
-        ImGui.TextWrapped("Press Save as List on the Remembered list to keep its furnishings " +
-                          "under a name. A saved list always shows where every copy is right " +
-                          "now, so it stays current as you move things.");
+        ImGui.TextWrapped("Press \"Save as new list\" on the Remembered list to keep its " +
+                          "furnishings under a name, or \"Add to existing list\" to put them " +
+                          "on one you already have. A saved list always shows where every copy " +
+                          "is right now, so it stays current as you move things.");
         ImGui.Spacing();
         ImGui.TextWrapped("To add to a list later, click a furnishing's name anywhere and pick " +
                           "the list.");
