@@ -103,10 +103,7 @@ public class Configuration : IPluginConfiguration
     {
         if (WatchedLines.Count == 0) return null;
 
-        var n = SavedLists.Count + 1;
-        while (SavedLists.Any(l => l.Name == $"List {n}")) n++;
-
-        var list = new SavedList { Id = Guid.NewGuid().ToString("N"), Name = $"List {n}" };
+        var list = NewList();
 
         foreach (var w in WatchedLines)
             if (list.Items.All(i => i.ItemId != w.ItemId))
@@ -114,6 +111,32 @@ public class Configuration : IPluginConfiguration
 
         SavedLists.Add(list);
         return list;
+    }
+
+    /// <summary>An empty list under the next free "List N" name. Not added to the saved lists.</summary>
+    private SavedList NewList()
+    {
+        var n = SavedLists.Count + 1;
+        while (SavedLists.Any(l => l.Name == $"List {n}")) n++;
+
+        return new SavedList { Id = Guid.NewGuid().ToString("N"), Name = $"List {n}" };
+    }
+
+    /// <summary>A new saved list holding one furnishing.</summary>
+    public SavedList NewListWith(Piece piece)
+    {
+        var list = NewList();
+        list.Items.Add(new SavedItem { ItemId = piece.ItemId, Name = piece.Name, IconId = piece.IconId });
+        SavedLists.Add(list);
+        return list;
+    }
+
+    /// <summary>Puts a furnishing on a saved list, or takes it off if it is already there.</summary>
+    public void ToggleOnList(SavedList list, Piece piece)
+    {
+        if (list.Items.RemoveAll(i => i.ItemId == piece.ItemId) > 0) return;
+
+        list.Items.Add(new SavedItem { ItemId = piece.ItemId, Name = piece.Name, IconId = piece.IconId });
     }
 
     /// <summary>

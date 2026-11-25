@@ -15,23 +15,49 @@ public sealed class MainWindow : Window
     private readonly Plugin plugin;
     private string search = string.Empty;
 
+    /// <summary>The furnishing whose name was clicked, while its "Add to list" menu is up.</summary>
+    private Piece? addToList;
+
     /// <summary>
-    /// Set by clicking a furnishing's name: the search is then for that one item, not for
-    /// everything with its name in theirs. It holds only while the box still reads exactly
-    /// that name, so typing anything else goes back to an ordinary search.
+    /// The menu a furnishing's name opens: every saved list, to put it on or take it off,
+    /// and a way to start a new list with it.
     /// </summary>
-    private uint onlyItemId;
-    private string onlyItemName = string.Empty;
-
-    private uint OnlyItem(string q) =>
-        onlyItemId != 0 && q.Trim() == onlyItemName ? onlyItemId : 0;
-
-    private void SearchForItem(Piece piece)
+    private void DrawAddToList(string popup)
     {
-        onlyItemId = piece.ItemId;
-        onlyItemName = piece.Name.Trim();
-        search = onlyItemName;
-        selectSearch = true;
+        if (!ImGui.BeginPopup(popup)) return;
+
+        var piece = addToList;
+        if (piece == null)
+        {
+            ImGui.EndPopup();
+            return;
+        }
+
+        ImGui.TextDisabled($"Add {piece.Name} to:");
+        ImGui.Separator();
+
+        foreach (var list in Cfg.SavedLists)
+        {
+            var on = list.Items.Any(i => i.ItemId == piece.ItemId);
+            var name = string.IsNullOrWhiteSpace(list.Name) ? "Unnamed list" : list.Name;
+
+            // Already on it: shown as chosen, and choosing it again takes it back off.
+            if (!ImGui.Selectable($"{name}{(on ? "  (added)" : string.Empty)}###addto{list.Id}", on))
+                continue;
+
+            Cfg.ToggleOnList(list, piece);
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
+        if (Cfg.SavedLists.Count > 0) ImGui.Separator();
+
+        if (ImGui.Selectable("New list"))
+        {
+            Cfg.NewListWith(piece);
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
+        ImGui.EndPopup();
     }
 
     /// <summary>The index, or the stand-in copy of it while screenshot mode is on.</summary>
@@ -107,7 +133,6 @@ public sealed class MainWindow : Window
     public void SearchFor(string text)
     {
         search = text.Length > 100 ? text[..100] : text;
-        onlyItemId = 0;
         selectSearch = true;
         IsOpen = true;
     }
@@ -260,8 +285,6 @@ public sealed class MainWindow : Window
     /// changed: a different query, a different filter, or an index that has been written
     /// to since. Otherwise the previous results stand and the frame costs nothing.
     /// </summary>
-    private uint cachedOnly;
-
     private const int SortName = 0;
     private const int SortStoredFirst = 1;
     private const int SortInventoriesFirst = 2;
@@ -283,11 +306,9 @@ public sealed class MainWindow : Window
     private void Refresh(string q)
     {
         if (cachedQuery == q && cachedFilter == Cfg.SearchStoredOnly
-            && cachedOnly == OnlyItem(q)
             && cachedRevision == Configuration.Revision)
             return;
 
-        cachedOnly = OnlyItem(q);
         cachedQuery = q;
         cachedFilter = Cfg.SearchStoredOnly;
         cachedRevision = Configuration.Revision;
@@ -312,7 +333,6 @@ public sealed class MainWindow : Window
         var skipped = 0;
 
         var needle = q.Trim();
-        var only = OnlyItem(q);
         var hits = new List<Hit>();
         var hiding = Cfg.SearchStoredOnly;
         var hidden = 0;
@@ -320,9 +340,7 @@ public sealed class MainWindow : Window
         void Consider(string source, string label, DateTime taken, bool partial, Piece piece,
                       bool inScope, PlaceKind kind)
         {
-            if (only != 0 ? piece.ItemId != only
-                          : !piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase))
-                return;
+            if (!piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)) return;
 
             if (!inScope)
             {
@@ -1483,11 +1501,11 @@ public sealed class MainWindow : Window
             ImGui.TableNextColumn();
             Colored(tint, label);
 
-            // The name is a link: click it and the search narrows to this one furnishing.
+            // The name is a link: click it for the menu that adds it to a saved list.
             if (ImGui.IsItemHovered())
             {
                 ImGui.SetMouseCursor(ImGuiMouseCursor.Hand);
-                ImGui.SetTooltip("Click to search for this furnishing only.");
+                ImGui.SetTooltip("Click to add this furnishing to a saved list.");
                 if (ImGui.IsMouseClicked(ImGuiMouseButton.Left)) picked = p;
             }
 
@@ -1525,8 +1543,17 @@ public sealed class MainWindow : Window
 
         ImGui.EndTable();
 
-        // After the table is closed, because this changes what the next frame draws.
-        if (picked != null) SearchForItem(picked);
+        // Opened and drawn out here, after the table: a popup has to be opened at the
+        // same level it is drawn at, and inside the table is a level further in.
+        var popup = "addto" + id;
+
+        if (picked != null)
+        {
+            addToList = picked;
+            ImGui.OpenPopup(popup);
+        }
+
+        DrawAddToList(popup);
 
         // Held on screen for a few seconds. Shown only on the frame of the click, it was
         // gone before it could be read.
@@ -1603,6 +1630,9 @@ public sealed class MainWindow : Window
         ImGui.TextWrapped("Press Save as List on the Remembered list to keep its furnishings " +
                           "under a name. A saved list always shows where every copy is right " +
                           "now, so it stays current as you move things.");
+        ImGui.Spacing();
+        ImGui.TextWrapped("To add to a list later, click a furnishing's name anywhere and pick " +
+                          "the list.");
 
         ImGui.Spacing();
         ImGui.Separator();
