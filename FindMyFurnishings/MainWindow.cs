@@ -38,6 +38,53 @@ public sealed class MainWindow : Window
     /// Opens the window on the Search tab with this already typed in. What "/fmf oak bed"
     /// was always described as doing.
     /// </summary>
+    /// <summary>
+    /// Writes what the search box is doing to the log: what is typed, what is switched
+    /// off, and for every place recorded whether it is searched and how many of its
+    /// pieces match. For working out why something recorded does not come up.
+    /// </summary>
+    public void DumpSearch(Dalamud.Plugin.Services.IPluginLog log, string me)
+    {
+        static string Plain(string s) =>
+            string.Concat(s.Select(c => c is >= ' ' and <= '~' ? c.ToString() : $"\\u{(int)c:X4}"));
+
+        var needle = search.Trim();
+
+        log.Information("[FMF] ---- search ----");
+        log.Information($"[FMF] typed=\"{Plain(search)}\" me=\"{Plain(me)}\" " +
+                        $"demo={plugin.Demo.On} storedOnly={Cfg.SearchStoredOnly} " +
+                        $"owned={Cfg.SearchOwnedEstates} guest={Cfg.SearchGuestEstates} " +
+                        $"company={Cfg.SearchCompanyEstates}");
+        log.Information($"[FMF] last result: {cachedHits.Count} shown, {cachedHidden} hidden as " +
+                        $"placed, {cachedOutOfScope} out of scope");
+        log.Information("[FMF] unticked: " + (Cfg.SearchExcluded.Count == 0
+            ? "(none)"
+            : string.Join(", ", Cfg.SearchExcluded.Select(x => $"\"{Plain(x)}\""))));
+
+        var companyEstates = SearchableCompanyEstates();
+
+        void Line(string kind, string id, string owner, bool searched, List<Piece> pieces)
+        {
+            var matches = needle.Length == 0
+                ? new List<Piece>()
+                : pieces.Where(x => x.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)).ToList();
+
+            log.Information($"[FMF]   {kind} {Plain(id)} owner=\"{Plain(owner)}\" " +
+                            $"searched={searched} pieces={pieces.Count} matches={matches.Count}");
+
+            // Spelled out character by character, so a name that only looks like it
+            // contains the search text shows what it really holds.
+            foreach (var x in (matches.Count > 0 ? matches : pieces).Take(4))
+                log.Information($"[FMF]       \"{Plain(x.Name)}\" where={x.Where}");
+        }
+
+        foreach (var p in Cfg.Properties.Values)
+            Line("property", p.Key.Id, p.Owner, Searchable(p, companyEstates), p.Pieces);
+
+        foreach (var h in Cfg.Holdings.Values)
+            Line("holding", h.Id, h.Owner, Searchable(h), h.Pieces);
+    }
+
     public void SearchFor(string text)
     {
         search = text.Length > 100 ? text[..100] : text;

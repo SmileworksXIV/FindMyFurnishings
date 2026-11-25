@@ -1183,6 +1183,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     /// </summary>
     private void Dump()
     {
+        // First, and not behind the housing check below: a search can be asked about from
+        // anywhere.
+        main.DumpSearch(Log, LocalPlayerName);
+
         var mgr = HousingManager.Instance();
         if (mgr == null)
         {
