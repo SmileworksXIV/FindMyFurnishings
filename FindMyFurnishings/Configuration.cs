@@ -23,10 +23,11 @@ public class Configuration : IPluginConfiguration
     public bool SearchStoredOnly { get; set; }
 
     /// <summary>
-    /// List search results place by place instead of by item name - the order someone
-    /// walking round collecting things wants them in.
+    /// The order search results are listed in: 0 item name, 1 stored items first,
+    /// 2 inventories first, 3 quantity high to low, 4 quantity low to high. A plain number
+    /// so a config written by a build with more choices still loads in one with fewer.
     /// </summary>
-    public bool SearchSortByLocation { get; set; }
+    public int SearchSort { get; set; }
 
     /// <summary>
     /// Characters left OUT of a search, as they are written in the list.

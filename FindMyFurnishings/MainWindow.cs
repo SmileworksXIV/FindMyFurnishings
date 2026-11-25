@@ -194,18 +194,18 @@ public sealed class MainWindow : Window
         ImGui.TextUnformatted("Sort by");
         ImGui.SameLine();
 
-        if (ImGui.RadioButton("Name", !Cfg.SearchSortByLocation) && Cfg.SearchSortByLocation)
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.BeginCombo("##sort", SortNames[Sort]))
         {
-            Cfg.SearchSortByLocation = false;
-            Cfg.Save(Plugin.PluginInterface);
-        }
+            for (var i = 0; i < SortNames.Length; i++)
+            {
+                if (!ImGui.Selectable(SortNames[i], i == Sort)) continue;
 
-        ImGui.SameLine();
+                Cfg.SearchSort = i;
+                Cfg.Save(Plugin.PluginInterface);
+            }
 
-        if (ImGui.RadioButton("Location", Cfg.SearchSortByLocation) && !Cfg.SearchSortByLocation)
-        {
-            Cfg.SearchSortByLocation = true;
-            Cfg.Save(Plugin.PluginInterface);
+            ImGui.EndCombo();
         }
 
         DrawSearchFilters();
@@ -261,6 +261,24 @@ public sealed class MainWindow : Window
     /// to since. Otherwise the previous results stand and the frame costs nothing.
     /// </summary>
     private uint cachedOnly;
+
+    private const int SortName = 0;
+    private const int SortStoredFirst = 1;
+    private const int SortInventoriesFirst = 2;
+    private const int SortQuantityHigh = 3;
+    private const int SortQuantityLow = 4;
+
+    private static readonly string[] SortNames =
+    [
+        "Item Name",
+        "Stored Items First",
+        "Inventories First",
+        "Quantity (High -> Low)",
+        "Quantity (Low -> High)",
+    ];
+
+    /// <summary>The chosen order, or item name if the saved number means nothing here.</summary>
+    private int Sort => Cfg.SearchSort >= 0 && Cfg.SearchSort < SortNames.Length ? Cfg.SearchSort : SortName;
 
     private void Refresh(string q)
     {
@@ -344,15 +362,21 @@ public sealed class MainWindow : Window
         hiddenByFilter = hidden;
         outOfScope = skipped;
 
-        // By place: everything in one estate or container together, in the order you
-        // would pick it up. The source id breaks ties, so two characters' apartments -
-        // both called "Apartment" - do not shuffle into each other.
-        if (Cfg.SearchSortByLocation)
+        // Storerooms on top, or bags, saddlebag and retainers on top; by name within
+        // each. The two quantity orders are applied when the table is drawn instead,
+        // because a row's count only exists once identical pieces have been stacked.
+        if (Sort is SortStoredFirst or SortInventoriesFirst)
+        {
+            var storedFirst = Sort == SortStoredFirst;
+
             return hits
-                .OrderBy(h => h.Location, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(h => h.Source, StringComparer.Ordinal)
+                .OrderByDescending(h => storedFirst
+                    ? IsStored(h.Piece.Where)
+                    : h.Kind is PlaceKind.Carried or PlaceKind.Retainer)
                 .ThenBy(h => h.Piece.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(h => h.Location, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+        }
 
         return hits
             .OrderByDescending(h => h.Piece.Name.StartsWith(needle, StringComparison.OrdinalIgnoreCase))
@@ -1391,6 +1415,18 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("Where", ImGuiTableColumnFlags.WidthStretch, 2);
         if (showLocation) ImGui.TableSetupColumn("Property", ImGuiTableColumnFlags.WidthStretch, 2);
         ImGui.TableHeadersRow();
+
+        // Search results only. Done here rather than in the search itself: the count is
+        // the stacked row's, which does not exist until Grouped has run.
+        if (showLocation && (Sort is SortQuantityHigh or SortQuantityLow))
+        {
+            shown = (Sort == SortQuantityHigh
+                    ? shown.OrderByDescending(r => r.Count)
+                    : shown.OrderBy(r => r.Count))
+                .ThenBy(r => r.Row.Piece.Name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(r => r.Row.Location, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
 
         var index = 0;
         Piece? picked = null;
