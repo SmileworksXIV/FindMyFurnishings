@@ -217,9 +217,22 @@ public class Configuration : IPluginConfiguration
     /// </summary>
     public static int Revision;
 
+    /// <summary>
+    /// Set on the copy that screenshot mode shows. A private field, so it is never written
+    /// to the config file and a loaded config can never have it set.
+    /// </summary>
+    private bool demo;
+
+    public void MarkDemo() => demo = true;
+
     public void Save(IDalamudPluginInterface pi)
     {
         Revision++;
+
+        // The demo copy has stand-in names in it. Written to disk, it would replace the
+        // real index with them.
+        if (demo) return;
+
         pi.SavePluginConfig(this);
     }
 

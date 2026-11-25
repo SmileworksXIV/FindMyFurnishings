@@ -15,7 +15,10 @@ public sealed class MainWindow : Window
     private readonly Plugin plugin;
     private string search = string.Empty;
 
-    private Configuration Cfg => plugin.Config;
+    /// <summary>The index, or the stand-in copy of it while screenshot mode is on.</summary>
+    private Configuration Cfg => plugin.Demo.Config ?? plugin.Config;
+
+    private string Me => plugin.Demo.On ? plugin.Demo.Me : Plugin.LocalPlayerName;
 
     public MainWindow(Plugin plugin)
         : base("Find My Furnishings###FmfMain")
@@ -825,7 +828,7 @@ public sealed class MainWindow : Window
     /// </summary>
     private List<CharacterSection> Sections(out List<PropertySnapshot> orphans)
     {
-        var me = Plugin.LocalPlayerName;
+        var me = Me;
 
         // Company property - the hall and its yard - belongs to the company rather than to
         // any one character, so it is held back here and placed inside the sections of the
@@ -1431,5 +1434,38 @@ public sealed class MainWindow : Window
             Cfg.StaleAfterDays = Math.Max(0, stale);
             Cfg.Save(Plugin.PluginInterface);
         }
+
+        if (plugin.Demo.On) DrawDemoNames();
+    }
+
+    /// <summary>
+    /// The stand-in for each name, while screenshot mode is on. The one place the real
+    /// names still show, because a box has to say whose it is.
+    /// </summary>
+    private void DrawDemoNames()
+    {
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextColored(Heading, "Demo names");
+        ImGui.TextWrapped("For screenshots. These replace names in this window only and are " +
+                          "not saved. /fmf demo turns it off. Keep this panel out of the " +
+                          "shot - it shows the real names.");
+        ImGui.Spacing();
+
+        var changed = false;
+
+        foreach (var (key, real) in plugin.Demo.Names)
+        {
+            var alias = plugin.Demo.Aliases.GetValueOrDefault(key, string.Empty);
+
+            ImGui.SetNextItemWidth(220);
+            if (ImGui.InputTextWithHint($"{real}###demo{key}", "Stand-in name...", ref alias, 40))
+                plugin.Demo.Aliases[key] = alias;
+
+            // Applied when you finish typing: every change copies the whole index.
+            if (ImGui.IsItemDeactivatedAfterEdit()) changed = true;
+        }
+
+        if (changed) plugin.RebuildDemo();
     }
 }

@@ -37,6 +37,24 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public Configuration Config { get; }
 
+    /// <summary>Screenshot mode. Off unless /fmf demo was run this session.</summary>
+    internal Demo Demo { get; } = new();
+
+    /// <summary>Builds the stand-in copy again, after a name was changed.</summary>
+    internal void RebuildDemo()
+    {
+        try
+        {
+            Demo.Build(Config, LocalPlayerName);
+        }
+        catch (Exception ex)
+        {
+            Demo.Off();
+            Log.Error(ex, "[FMF] Demo names could not be built.");
+            ChatGui.PrintError("[FMF] Demo names could not be built, so they are off.");
+        }
+    }
+
     /// <summary>
     /// Slot 0 of the object table is always the local player. The client-state property
     /// that used to give it was removed in Dalamud API 15, and an empty name here doubles
@@ -391,6 +409,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             case "bags":
                 ScanBags(force: true);
+                return;
+
+            case "demo":
+                if (Demo.On)
+                {
+                    Demo.Off();
+                    ChatGui.Print("[FMF] Demo names off.");
+                    return;
+                }
+
+                RebuildDemo();
+                if (Demo.On)
+                    ChatGui.Print("[FMF] Demo names on. Character and retainer names are " +
+                                  "replaced in the window only - change them under Settings. " +
+                                  "Nothing is saved; /fmf demo again turns it off.");
                 return;
         }
 
