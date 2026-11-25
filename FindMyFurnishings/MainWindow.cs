@@ -1432,7 +1432,56 @@ public sealed class MainWindow : Window
         ImGui.TableSetupColumn("Item", ImGuiTableColumnFlags.WidthStretch, 3);
         ImGui.TableSetupColumn("Where", ImGuiTableColumnFlags.WidthStretch, 2);
         if (showLocation) ImGui.TableSetupColumn("Property", ImGuiTableColumnFlags.WidthStretch, 2);
-        ImGui.TableHeadersRow();
+
+        // The header row by hand, so its first cell can hold a tick box for the whole
+        // table. Ticked when every row shown is remembered; clicking it remembers them
+        // all, or forgets them all if they already are.
+        ImGui.TableNextRow(ImGuiTableRowFlags.Headers);
+        ImGui.TableNextColumn();
+
+        var allKept = shown.Count > 0;
+        foreach (var (row, _) in shown)
+        {
+            if (Cfg.IsWatched(row.Source, row.Piece)) continue;
+            allKept = false;
+            break;
+        }
+
+        var keepAll = allKept;
+        if (ImGui.Checkbox("##keepall", ref keepAll) && shown.Count > 0)
+        {
+            foreach (var (row, _) in shown)
+            {
+                // Asked first rather than toggled blind: with stacking off, identical
+                // rows share one tick, and toggling it twice would undo itself.
+                if (Cfg.IsWatched(row.Source, row.Piece) != allKept) continue;
+
+                if (Cfg.ToggleWatched(row.Source, row.Piece)) continue;
+
+                // The list is full. Keep what fitted and say so.
+                listFullUntil = DateTime.UtcNow.AddSeconds(5);
+                listFullTable = id;
+                break;
+            }
+
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(allKept ? "Untick every row shown." : "Tick every row shown.");
+
+        ImGui.TableNextColumn();
+        ImGui.TableHeader("##icon");
+        ImGui.TableNextColumn();
+        ImGui.TableHeader("Item");
+        ImGui.TableNextColumn();
+        ImGui.TableHeader("Where");
+
+        if (showLocation)
+        {
+            ImGui.TableNextColumn();
+            ImGui.TableHeader("Property");
+        }
 
         // Search results only. Done here rather than in the search itself: the count is
         // the stacked row's, which does not exist until Grouped has run.
