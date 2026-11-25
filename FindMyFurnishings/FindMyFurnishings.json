@@ -3,7 +3,7 @@
   "InternalName": "FindMyFurnishings",
   "Author": "Smileworks",
   "Punchline": "Where did I put that lamp?",
-  "Description": "Keeps a searchable index of all furnishing items across all owned characters' inventories and estates for which you have housing editing privileges.",
+  "Description": "Keeps a searchable index of all furnishing items across all character inventories and estates that you have house editing privileges to.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/SmileworksXIV/FindMyFurnishings",
   "DalamudApiLevel": 15,

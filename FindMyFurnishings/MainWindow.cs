@@ -1322,7 +1322,8 @@ public sealed class MainWindow : Window
     private void DrawHelp()
     {
         ImGui.TextWrapped("This tool creates a searchable index of your furnishings across all " +
-                          "estates and inventories that you own.");
+                          "character inventories and estates that you have house editing " +
+                          "privileges to.");
 
         ImGui.Spacing();
         ImGui.TextUnformatted("The following is recordable:");
