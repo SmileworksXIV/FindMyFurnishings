@@ -328,7 +328,37 @@ public static class RoomLimits
 /// container's. The name on screen can be changed by hand; this cannot, so it is what a
 /// remembered line is tied to.
 /// </param>
-public sealed record Hit(string Source, string Location, DateTime TakenUtc, bool Partial, Piece Piece);
+public sealed record Hit(string Source, string Location, DateTime TakenUtc, bool Partial, Piece Piece,
+                         PlaceKind Kind = PlaceKind.Carried);
+
+/// <summary>What sort of place a row is in, which decides the colour it is written in.</summary>
+public enum PlaceKind
+{
+    /// <summary>Bags and the saddlebag. Left in the window's ordinary text colour.</summary>
+    Carried,
+    Retainer,
+    Owned,
+    Company,
+    Guest,
+}
+
+/// <summary>
+/// A text colour, as three plain numbers from 0 to 1. Not a vector: those are written to
+/// the config file as fields, which not everything that reads the file back understands.
+/// </summary>
+public sealed class TextColor
+{
+    public float R { get; set; } = 1f;
+    public float G { get; set; } = 1f;
+    public float B { get; set; } = 1f;
+
+    public void Set(float r, float g, float b)
+    {
+        R = r;
+        G = g;
+        B = b;
+    }
+}
 
 /// <summary>
 /// One ticked line: an item in one spot of one place. The same item somewhere else is a

@@ -257,7 +257,7 @@ public sealed class MainWindow : Window
         var hidden = 0;
 
         void Consider(string source, string label, DateTime taken, bool partial, Piece piece,
-                      bool inScope)
+                      bool inScope, PlaceKind kind)
         {
             if (!piece.Name.Contains(needle, StringComparison.OrdinalIgnoreCase)) return;
 
@@ -273,7 +273,7 @@ public sealed class MainWindow : Window
                 return;
             }
 
-            hits.Add(new Hit(source, label, taken, partial, piece));
+            hits.Add(new Hit(source, label, taken, partial, piece, kind));
         }
 
         var companyEstates = SearchableCompanyEstates();
@@ -284,7 +284,7 @@ public sealed class MainWindow : Window
 
             var source = "p:" + p.Key.Id;
             foreach (var piece in p.Pieces)
-                Consider(source, p.Label, p.TakenUtc, p.Partial, piece, inScope);
+                Consider(source, p.Label, p.TakenUtc, p.Partial, piece, inScope, KindOf(p));
         }
 
         foreach (var h in Cfg.Holdings.Values)
@@ -293,7 +293,7 @@ public sealed class MainWindow : Window
 
             var source = "h:" + h.Id;
             foreach (var piece in h.Pieces)
-                Consider(source, h.DisplayName, h.TakenUtc, h.Partial, piece, inScope);
+                Consider(source, h.DisplayName, h.TakenUtc, h.Partial, piece, inScope, KindOf(h));
         }
 
         hiddenByFilter = hidden;
@@ -445,7 +445,7 @@ public sealed class MainWindow : Window
 
     private bool Searchable(HoldingSnapshot h) => !Cfg.SearchExcluded.Contains(Who(h.Owner));
 
-    private readonly List<(string? Location, string Who, int Count)> remembered = new();
+    private readonly List<(string? Location, string Who, PlaceKind Kind, int Count)> remembered = new();
     private readonly List<int> rememberedOrder = new();
     private int rememberedRevision = -1;
 
@@ -457,7 +457,7 @@ public sealed class MainWindow : Window
     /// Not narrowed by "Search in" or "View stored items only": a line is on this list
     /// because it was ticked by hand, and a filter changed afterwards should not hide it.
     /// </summary>
-    private List<(string? Location, string Who, int Count)> Remembered()
+    private List<(string? Location, string Who, PlaceKind Kind, int Count)> Remembered()
     {
         if (rememberedRevision == Configuration.Revision) return remembered;
 
@@ -466,14 +466,14 @@ public sealed class MainWindow : Window
         rememberedOrder.Clear();
 
         var lines = Cfg.WatchedLines;
-        for (var i = 0; i < lines.Count; i++) remembered.Add((null, string.Empty, 0));
+        for (var i = 0; i < lines.Count; i++) remembered.Add((null, string.Empty, PlaceKind.Carried, 0));
         if (lines.Count == 0) return remembered;
 
         foreach (var p in Cfg.Properties.Values)
-            Tally("p:" + p.Key.Id, p.Label, WhoseLine(p.Owner, p.Label), p.Pieces);
+            Tally("p:" + p.Key.Id, p.Label, WhoseLine(p.Owner, p.Label), KindOf(p), p.Pieces);
 
         foreach (var h in Cfg.Holdings.Values)
-            Tally("h:" + h.Id, h.DisplayName, WhoseLine(h.Owner, h.DisplayName), h.Pieces);
+            Tally("h:" + h.Id, h.DisplayName, WhoseLine(h.Owner, h.DisplayName), KindOf(h), h.Pieces);
 
         // Lines for the same item sit together, items in the order they were first ticked.
         var firstSeen = new Dictionary<uint, int>();
@@ -486,7 +486,8 @@ public sealed class MainWindow : Window
         return remembered;
     }
 
-    private void Tally(string source, string label, string who, IEnumerable<Piece> pieces)
+    private void Tally(string source, string label, string who, PlaceKind kind,
+                       IEnumerable<Piece> pieces)
     {
         var wanted = false;
         foreach (var w in Cfg.WatchedLines)
@@ -499,7 +500,7 @@ public sealed class MainWindow : Window
             var at = Cfg.FindWatched(source, piece);
             if (at < 0) continue;
 
-            remembered[at] = (label, who, remembered[at].Count + Math.Max(1, piece.Quantity));
+            remembered[at] = (label, who, kind, remembered[at].Count + Math.Max(1, piece.Quantity));
         }
     }
 
@@ -568,7 +569,7 @@ public sealed class MainWindow : Window
                     if (ImGui.SmallButton($"Forget###unwatch{i}")) forget = i;
                     ImGui.SameLine();
 
-                    var (location, who, count) = found[i];
+                    var (location, who, kind, count) = found[i];
                     var spot = SpotNames.Label(w.Where) +
                                (string.IsNullOrEmpty(w.Detail) ? string.Empty : $" ({w.Detail})");
 
@@ -584,10 +585,7 @@ public sealed class MainWindow : Window
                         // like a bug in the very list meant to be easier to read.
                         var text = $"{location} - {spot}" + (count > 1 ? $"  x{count:N0}" : string.Empty);
 
-                        if (w.Where is Spot.IndoorStoreroom or Spot.OutdoorStoreroom)
-                            ImGui.TextColored(Stored, text);
-                        else
-                            ImGui.TextUnformatted(text);
+                        Colored(Tint(IsStored(w.Where), kind), text);
 
                         Whose(who);
                     }
@@ -621,7 +619,7 @@ public sealed class MainWindow : Window
     /// <summary>The list whose Delete has been pressed once and is waiting for the second.</summary>
     private string deleteListId = string.Empty;
 
-    private readonly Dictionary<uint, List<(string Text, string Who, bool Stored, int Count)>> savedWhere = new();
+    private readonly Dictionary<uint, List<(string Text, string Who, bool Stored, PlaceKind Kind, int Count)>> savedWhere = new();
     private int savedRevision = -1;
 
     /// <summary>
@@ -629,7 +627,7 @@ public sealed class MainWindow : Window
     /// Read from the current records each time they change, which is the whole point: a
     /// saved list names furnishings, and this is what says where they are today.
     /// </summary>
-    private Dictionary<uint, List<(string Text, string Who, bool Stored, int Count)>> SavedWhere()
+    private Dictionary<uint, List<(string Text, string Who, bool Stored, PlaceKind Kind, int Count)>> SavedWhere()
     {
         if (savedRevision == Configuration.Revision) return savedWhere;
 
@@ -638,29 +636,32 @@ public sealed class MainWindow : Window
 
         foreach (var list in Cfg.SavedLists)
             foreach (var item in list.Items)
-                savedWhere.TryAdd(item.ItemId, new List<(string, string, bool, int)>());
+                savedWhere.TryAdd(item.ItemId, new List<(string, string, bool, PlaceKind, int)>());
 
         if (savedWhere.Count == 0) return savedWhere;
 
-        void Add(string label, string who, IEnumerable<Piece> pieces)
+        void Add(string label, string who, PlaceKind kind, IEnumerable<Piece> pieces)
         {
             foreach (var piece in pieces)
             {
                 if (!savedWhere.TryGetValue(piece.ItemId, out var into)) continue;
 
-                var stored = piece.Where is Spot.IndoorStoreroom or Spot.OutdoorStoreroom;
+                var stored = IsStored(piece.Where);
                 var text = $"{label} - {SpotNames.Label(piece.Where)}" +
                            (string.IsNullOrEmpty(piece.Detail) ? string.Empty : $" ({piece.Detail})");
                 var n = Math.Max(1, piece.Quantity);
 
                 var at = into.FindIndex(l => l.Text == text && l.Who == who && l.Stored == stored);
-                if (at >= 0) into[at] = (text, who, stored, into[at].Count + n);
-                else into.Add((text, who, stored, n));
+                if (at >= 0) into[at] = (text, who, stored, kind, into[at].Count + n);
+                else into.Add((text, who, stored, kind, n));
             }
         }
 
-        foreach (var p in Cfg.Properties.Values) Add(p.Label, WhoseLine(p.Owner, p.Label), p.Pieces);
-        foreach (var h in Cfg.Holdings.Values) Add(h.DisplayName, WhoseLine(h.Owner, h.DisplayName), h.Pieces);
+        foreach (var p in Cfg.Properties.Values)
+            Add(p.Label, WhoseLine(p.Owner, p.Label), KindOf(p), p.Pieces);
+
+        foreach (var h in Cfg.Holdings.Values)
+            Add(h.DisplayName, WhoseLine(h.Owner, h.DisplayName), KindOf(h), h.Pieces);
 
         // By character first, so one character's places sit together under each item.
         foreach (var lines in savedWhere.Values)
@@ -765,14 +766,13 @@ public sealed class MainWindow : Window
                 }
                 else
                 {
-                    foreach (var (text, who, stored, n) in lines)
+                    foreach (var (text, who, stored, kind, n) in lines)
                     {
                         // Plain "x" rather than the multiplication sign: the font atlas
                         // is not guaranteed to carry it.
                         var label = n > 1 ? $"{text}  x{n:N0}" : text;
 
-                        if (stored) ImGui.TextColored(Stored, label);
-                        else ImGui.TextUnformatted(label);
+                        Colored(Tint(stored, kind), label);
 
                         Whose(who);
                     }
@@ -804,8 +804,41 @@ public sealed class MainWindow : Window
     private static readonly Vector4 Heading = new(0.85f, 0.78f, 0.55f, 1f);
     private static readonly Vector4 Warn = new(0.95f, 0.75f, 0.25f, 1f);
 
-    /// <summary>#FDFD66 - marks an item that is stored rather than placed.</summary>
-    private static readonly Vector4 Stored = new(0.992f, 0.992f, 0.4f, 1f);
+    private static PlaceKind KindOf(PropertySnapshot p) =>
+        IsGuest(p) ? PlaceKind.Guest
+        : p.Estate == EstateType.FreeCompanyEstate ? PlaceKind.Company
+        : PlaceKind.Owned;
+
+    private static PlaceKind KindOf(HoldingSnapshot h) =>
+        h.Section == Section.Retainers ? PlaceKind.Retainer : PlaceKind.Carried;
+
+    private static bool IsStored(Spot where) => where is Spot.IndoorStoreroom or Spot.OutdoorStoreroom;
+
+    /// <summary>
+    /// The colour a row is written in, from Settings. A stored piece takes the storeroom
+    /// colour whatever kind of estate it is in - "is it out or put away" is the question
+    /// the tint was first added to answer - and everything else goes by where it is.
+    /// Null for bags and the saddlebag, which stay in the window's own text colour.
+    /// </summary>
+    private Vector4? Tint(bool stored, PlaceKind kind)
+    {
+        var c = stored ? Cfg.ColorStoreroom : kind switch
+        {
+            PlaceKind.Retainer => Cfg.ColorRetainers,
+            PlaceKind.Owned => Cfg.ColorOwned,
+            PlaceKind.Company => Cfg.ColorCompany,
+            PlaceKind.Guest => Cfg.ColorGuest,
+            _ => null,
+        };
+
+        return c == null ? null : new Vector4(c.R, c.G, c.B, 1f);
+    }
+
+    private static void Colored(Vector4? tint, string text)
+    {
+        if (tint is { } colour) ImGui.TextColored(colour, text);
+        else ImGui.TextUnformatted(text);
+    }
 
     private void DrawPlaces()
     {
@@ -1084,7 +1117,7 @@ public sealed class MainWindow : Window
         // looked at.
 
         DrawTable($"##t{p.Key.Id}", Sorted(shown.Select(x =>
-            new Hit("p:" + p.Key.Id, p.Label, p.TakenUtc, p.Partial, x))), showLocation: false);
+            new Hit("p:" + p.Key.Id, p.Label, p.TakenUtc, p.Partial, x, KindOf(p)))), showLocation: false);
 
         ImGui.Unindent();
         ImGui.Spacing();
@@ -1106,7 +1139,7 @@ public sealed class MainWindow : Window
         ImGui.Indent();
         Provenance(h.TakenUtc, h.Partial);
         DrawTable($"##th{h.Id}", Sorted(shown.Select(x =>
-            new Hit("h:" + h.Id, h.DisplayName, h.TakenUtc, h.Partial, x))), showLocation: false);
+            new Hit("h:" + h.Id, h.DisplayName, h.TakenUtc, h.Partial, x, KindOf(h)))), showLocation: false);
         ImGui.Unindent();
         ImGui.Spacing();
     }
@@ -1332,30 +1365,28 @@ public sealed class MainWindow : Window
             ImGui.TableNextColumn();
             Icons.Draw(p.IconId, IconSize);
 
-            // Stored items are tinted so a list can be read at a glance for what is
-            // actually out in the room versus what is sitting in the storeroom.
-            var stored = p.Where is Spot.IndoorStoreroom or Spot.OutdoorStoreroom;
+            // Tinted so a list can be read at a glance for what is out in the room, what
+            // is in the storeroom and whose place it is in. The colours are in Settings.
+            var tint = Tint(IsStored(p.Where), row.Kind);
 
             // Plain "x" rather than the multiplication sign: the font atlas is not
             // guaranteed to carry it, and a missing glyph would look like a fault.
             var label = count > 1 ? $"{p.Name}  x{count:N0}" : p.Name;
 
             ImGui.TableNextColumn();
-            if (stored) ImGui.TextColored(Stored, label);
-            else ImGui.TextUnformatted(label);
+            Colored(tint, label);
 
             ImGui.TableNextColumn();
             var where = string.IsNullOrEmpty(p.Detail)
                 ? SpotNames.Label(p.Where)
                 : $"{SpotNames.Label(p.Where)} - {p.Detail}";
 
-            if (stored) ImGui.TextColored(Stored, where);
-            else ImGui.TextUnformatted(where);
+            Colored(tint, where);
 
             if (showLocation)
             {
                 ImGui.TableNextColumn();
-                ImGui.TextUnformatted(row.Location);
+                Colored(tint, row.Location);
                 if (row.Partial || Cfg.IsStale(row.TakenUtc))
                 {
                     ImGui.SameLine();
@@ -1436,9 +1467,9 @@ public sealed class MainWindow : Window
         ImGui.Spacing();
         ImGui.Bullet();
         ImGui.SameLine();
-        ImGui.TextColored(Stored, "Yellow");
+        Colored(Tint(true, PlaceKind.Owned), "Stored items");
         ImGui.SameLine();
-        ImGui.TextWrapped("is stored, white is placed.");
+        ImGui.TextWrapped("are shown in this color. You can change the colors in Settings.");
 
         ImGui.Spacing();
         ImGui.Separator();
@@ -1508,7 +1539,45 @@ public sealed class MainWindow : Window
             Cfg.Save(Plugin.PluginInterface);
         }
 
+        ImGui.Spacing();
+        ImGui.Separator();
+        ImGui.TextColored(Heading, "Text colors");
+        ImGui.Spacing();
+
+        ColorBox("Storeroom", Cfg.ColorStoreroom);
+        ColorBox("Retainers", Cfg.ColorRetainers);
+        ColorBox("Owned Estates", Cfg.ColorOwned);
+        ColorBox("Free Company Estate", Cfg.ColorCompany);
+        ColorBox("Guest Estates", Cfg.ColorGuest);
+
+        if (ImGui.Button("Reset colors"))
+        {
+            Cfg.ResetColors();
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
+        // Written once the picker is let go of, not on every frame of a drag: a save
+        // serialises the whole index.
+        if (colorsChanged && !ImGui.IsAnyItemActive())
+        {
+            colorsChanged = false;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+
         if (plugin.Demo.On) DrawDemoNames();
+    }
+
+    private bool colorsChanged;
+
+    private void ColorBox(string label, TextColor color)
+    {
+        var value = new Vector3(color.R, color.G, color.B);
+
+        if (!ImGui.ColorEdit3($"{label}###color{label}", ref value, ImGuiColorEditFlags.NoInputs))
+            return;
+
+        color.Set(value.X, value.Y, value.Z);
+        colorsChanged = true;
     }
 
     /// <summary>
