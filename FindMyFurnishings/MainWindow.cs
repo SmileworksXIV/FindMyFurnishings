@@ -683,6 +683,24 @@ public sealed class MainWindow : Window
             var forget = -1;
             uint heading = 0;
 
+            // A long list gets a box of its own to scroll in. Left to grow, it pushed the
+            // search results off the bottom of the window as rows were ticked - and a row
+            // that drops out of sight the moment it is ticked looks like it was removed.
+            var rowsToDraw = lines.Count;
+            uint counted = 0;
+            if (found.Count == lines.Count)
+                foreach (var i in rememberedOrder)
+                {
+                    if (lines[i].ItemId == counted) continue;
+                    counted = lines[i].ItemId;
+                    rowsToDraw++;
+                }
+
+            var boxed = rowsToDraw > 9;
+            if (boxed)
+                ImGui.BeginChild("##rememberedlines",
+                                 new Vector2(0, ImGui.GetTextLineHeightWithSpacing() * 11));
+
             // The two lists are rebuilt together, so they only differ in length on the
             // frame something was ticked elsewhere and not yet saved. Skip that frame.
             if (found.Count == lines.Count)
@@ -730,6 +748,8 @@ public sealed class MainWindow : Window
                     ImGui.Unindent();
                 }
             }
+
+            if (boxed) ImGui.EndChild();
 
             if (clear)
             {
@@ -1555,9 +1575,19 @@ public sealed class MainWindow : Window
         var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH |
                     ImGuiTableFlags.SizingStretchProp;
 
-        if (shown.Count > ScrollAfterRows) flags |= ImGuiTableFlags.ScrollY;
+        // A scrolling table takes whatever height is left, and when little is left it
+        // shrinks to almost nothing. Never smaller than a dozen rows: past that the window
+        // scrolls instead, and the results stay on screen.
+        var outer = Vector2.Zero;
 
-        if (!ImGui.BeginTable(id, cols, flags)) return;
+        if (shown.Count > ScrollAfterRows)
+        {
+            flags |= ImGuiTableFlags.ScrollY;
+            outer = new Vector2(0, Math.Max(ImGui.GetContentRegionAvail().Y,
+                                            ImGui.GetTextLineHeightWithSpacing() * 14));
+        }
+
+        if (!ImGui.BeginTable(id, cols, flags, outer)) return;
 
         ImGui.TableSetupColumn("##keep", ImGuiTableColumnFlags.WidthFixed, 26);
         ImGui.TableSetupColumn("##icon", ImGuiTableColumnFlags.WidthFixed, IconSize + 6);
