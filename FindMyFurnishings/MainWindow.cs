@@ -239,7 +239,7 @@ public sealed class MainWindow : Window
             return;
         }
 
-        DrawTable("##hits", hits, showLocation: true);
+        DrawTable("##hits", () => hits!, showLocation: true);
     }
 
     /// <summary>
@@ -289,6 +289,7 @@ public sealed class MainWindow : Window
         cachedRevision = Configuration.Revision;
 
         cachedOutOfScope = 0;
+        searchEpoch++;
         cachedHits = q.Length == 0 ? new List<Hit>() : Find(q, out cachedHidden, out cachedOutOfScope);
         if (q.Length == 0) cachedHidden = 0;
     }
@@ -1179,9 +1180,34 @@ public sealed class MainWindow : Window
     /// company nobody here belongs to comes back in <paramref name="orphans"/> rather than
     /// being filed under a guess.
     /// </summary>
+    private List<CharacterSection>? sectionsCache;
+    private List<PropertySnapshot> orphansCache = new();
+    private int sectionsRevision = -1;
+    private string sectionsMe = string.Empty;
+
+    /// <summary>
+    /// Kept until the index is next written to or a different character logs in. Working
+    /// this out sorts and groups everything recorded, and it was being done on every
+    /// frame the Furnishings or Removal tab was open. The lists it hands back are shared
+    /// between frames, so nothing that receives them may change them.
+    /// </summary>
     private List<CharacterSection> Sections(out List<PropertySnapshot> orphans)
     {
-        var me = Me;
+        var who = Me;
+
+        if (sectionsCache == null || sectionsRevision != Configuration.Revision || sectionsMe != who)
+        {
+            sectionsCache = BuildSections(who, out orphansCache);
+            sectionsRevision = Configuration.Revision;
+            sectionsMe = who;
+        }
+
+        orphans = orphansCache;
+        return sectionsCache;
+    }
+
+    private List<CharacterSection> BuildSections(string me, out List<PropertySnapshot> orphans)
+    {
 
         // Company property - the hall and its yard - belongs to the company rather than to
         // any one character, so it is held back here and placed inside the sections of the
@@ -1324,8 +1350,6 @@ public sealed class MainWindow : Window
 
     private void DrawProperty(PropertySnapshot p)
     {
-        var shown = Visible(p.Pieces);
-
         if (!ImGui.CollapsingHeader($"{p.Label} ({Breakdown(p)})###prop{p.Key.Id}"))
             return;
 
@@ -1364,7 +1388,7 @@ public sealed class MainWindow : Window
         // nothing from a property's section, so the picker changed a value that nothing
         // looked at.
 
-        DrawTable($"##t{p.Key.Id}", Sorted(shown.Select(x =>
+        DrawTable($"##t{p.Key.Id}", () => Sorted(Visible(p.Pieces).Select(x =>
             new Hit("p:" + p.Key.Id, p.Label, p.TakenUtc, p.Partial, x, KindOf(p)))), showLocation: false);
 
         ImGui.Unindent();
@@ -1373,8 +1397,6 @@ public sealed class MainWindow : Window
 
     private void DrawHolding(HoldingSnapshot h)
     {
-        var shown = Visible(h.Pieces);
-
         // A container has no placed-versus-stored to explain, so it just says how many -
         // and says what it is counting, because a bare "0 total" on a retainer reads like
         // the retainer was never read rather than like it holds no furniture.
@@ -1386,7 +1408,7 @@ public sealed class MainWindow : Window
 
         ImGui.Indent();
         Provenance(h.TakenUtc, h.Partial);
-        DrawTable($"##th{h.Id}", Sorted(shown.Select(x =>
+        DrawTable($"##th{h.Id}", () => Sorted(Visible(h.Pieces).Select(x =>
             new Hit("h:" + h.Id, h.DisplayName, h.TakenUtc, h.Partial, x, KindOf(h)))), showLocation: false);
         ImGui.Unindent();
         ImGui.Spacing();
@@ -1563,10 +1585,76 @@ public sealed class MainWindow : Window
     /// <summary>Rows a table may hold before it gets a scroll region of its own.</summary>
     private const int ScrollAfterRows = 25;
 
-    private void DrawTable(string id, List<Hit> rows, bool showLocation)
+    private sealed class TableRows
+    {
+        public List<(Hit Row, int Count)> Rows = new();
+        public Dictionary<uint, (int Total, int Rows)>? Totals;
+    }
+
+    private readonly Dictionary<string, TableRows> tables = new();
+    private int tablesRevision = -1;
+    private int tablesEpoch = -1;
+
+    /// <summary>Bumped whenever the search results are rebuilt, which a keystroke does without a save.</summary>
+    private int searchEpoch;
+
+    /// <summary>
+    /// A table's rows, sorted, stacked and totalled - worked out once and kept until the
+    /// index or the search changes.
+    ///
+    /// This used to be done on every frame for every open table. The Estate Hall alone is
+    /// several hundred rows, and each frame made a new object for every one of them, a
+    /// sort, and a text key per row to stack by: megabytes of throwaway memory a second
+    /// for a list that had not changed.
+    /// </summary>
+    private TableRows RowsFor(string id, Func<List<Hit>> build, bool showLocation)
+    {
+        if (tablesRevision != Configuration.Revision || tablesEpoch != searchEpoch)
+        {
+            tables.Clear();
+            tablesRevision = Configuration.Revision;
+            tablesEpoch = searchEpoch;
+        }
+
+        if (tables.TryGetValue(id, out var kept)) return kept;
+
+        var made = new TableRows { Rows = Grouped(build()) };
+
+        if (showLocation)
+        {
+            // Search results only, and done after stacking: the count is the stacked
+            // row's, which does not exist until Grouped has run.
+            if (Sort is SortQuantityHigh or SortQuantityLow)
+            {
+                made.Rows = (Sort == SortQuantityHigh
+                        ? made.Rows.OrderByDescending(r => r.Count)
+                        : made.Rows.OrderBy(r => r.Count))
+                    .ThenBy(r => r.Row.Piece.Name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(r => r.Row.Location, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+            }
+
+            // How many of each furnishing the whole list holds, and over how many rows.
+            // There the same item turns up in several places, and the sum across them is
+            // the number someone is usually after.
+            made.Totals = new Dictionary<uint, (int, int)>();
+
+            foreach (var (row, count) in made.Rows)
+            {
+                var had = made.Totals.GetValueOrDefault(row.Piece.ItemId);
+                made.Totals[row.Piece.ItemId] = (had.Total + count, had.Rows + 1);
+            }
+        }
+
+        tables[id] = made;
+        return made;
+    }
+
+    private void DrawTable(string id, Func<List<Hit>> build, bool showLocation)
     {
         var cols = showLocation ? 5 : 4;
-        var shown = Grouped(rows);
+        var kept = RowsFor(id, build, showLocation);
+        var shown = kept.Rows;
 
         // A scrolling table claims the rest of the window whether it needs the room or
         // not, which left a short list - two things in your bags - sitting above a screen
@@ -1672,36 +1760,9 @@ public sealed class MainWindow : Window
             ImGui.TableHeader("Property");
         }
 
-        // Search results only. Done here rather than in the search itself: the count is
-        // the stacked row's, which does not exist until Grouped has run.
-        if (showLocation && (Sort is SortQuantityHigh or SortQuantityLow))
-        {
-            shown = (Sort == SortQuantityHigh
-                    ? shown.OrderByDescending(r => r.Count)
-                    : shown.OrderBy(r => r.Count))
-                .ThenBy(r => r.Row.Piece.Name, StringComparer.OrdinalIgnoreCase)
-                .ThenBy(r => r.Row.Location, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-        }
-
         var index = 0;
         Piece? picked = null;
-
-        // How many of each furnishing the whole list holds, and over how many rows. Only
-        // for search results: there the same item turns up in several places, and the
-        // sum across them is the number someone is usually after.
-        Dictionary<uint, (int Total, int Rows)>? totals = null;
-
-        if (showLocation)
-        {
-            totals = new Dictionary<uint, (int, int)>();
-
-            foreach (var (row, count) in shown)
-            {
-                var had = totals.GetValueOrDefault(row.Piece.ItemId);
-                totals[row.Piece.ItemId] = (had.Total + count, had.Rows + 1);
-            }
-        }
+        var totals = kept.Totals;
 
         foreach (var (row, count) in shown)
         {
