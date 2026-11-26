@@ -1575,6 +1575,33 @@ public sealed class MainWindow : Window
         var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH |
                     ImGuiTableFlags.SizingStretchProp;
 
+        // Search results get a button that unticks every row shown in one press. The
+        // header box can do it too, but only once everything is ticked - with some rows
+        // ticked it ticks the rest first, which is the opposite of what was wanted.
+        if (showLocation)
+        {
+            var anyKept = false;
+            foreach (var (row, _) in shown)
+            {
+                if (!Cfg.IsWatched(row.Source, row.Piece)) continue;
+                anyKept = true;
+                break;
+            }
+
+            ImGui.BeginDisabled(!anyKept);
+
+            if (ImGui.SmallButton($"Uncheck All###uncheck{id}"))
+            {
+                foreach (var (row, _) in shown)
+                    if (Cfg.IsWatched(row.Source, row.Piece))
+                        Cfg.ToggleWatched(row.Source, row.Piece);
+
+                Cfg.Save(Plugin.PluginInterface);
+            }
+
+            ImGui.EndDisabled();
+        }
+
         // A scrolling table takes whatever height is left, and when little is left it
         // shrinks to almost nothing. Never smaller than a dozen rows: past that the window
         // scrolls instead, and the results stay on screen.
