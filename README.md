@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="FindMyFurnishings/images/icon.png" alt="Find My Furnishings logo" width="160">
+</p>
+
 # Find My Furnishings
 
 Don't know where you put that Goobbue Lamp? Need to know how many Troupe Stages you have stored across all of your estates? By default, players cannot search housing items stored or placed in estates. Find My Furnishings fixes that. This one's for the housing mains.
