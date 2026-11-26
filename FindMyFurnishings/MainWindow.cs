@@ -1894,28 +1894,62 @@ public sealed class MainWindow : Window
             Cfg.Save(Plugin.PluginInterface);
         }
 
-        // Written once the picker is let go of, not on every frame of a drag: a save
-        // serialises the whole index.
-        if (colorsChanged && !ImGui.IsAnyItemActive())
-        {
-            colorsChanged = false;
-            Cfg.Save(Plugin.PluginInterface);
-        }
-
         if (plugin.Demo.On) DrawDemoNames();
     }
 
-    private bool colorsChanged;
+    private const int PaletteColumns = 8;
 
+    /// <summary>
+    /// The colours on offer, as 0xRRGGBB, eight to a row. A fixed set rather than a free
+    /// picker: fifty-six that all read against a dark window are easier to choose from
+    /// than sixteen million, most of which do not.
+    /// </summary>
+    private static readonly uint[] Palette =
+    [
+        0xFFFFFF, 0xFFBDBD, 0xFFDEC7, 0xFFF7B0, 0xE8FFE0, 0xE5FFFC, 0x9CCFF2, 0xFFDBFF,
+        0xF7F7F7, 0xFF4040, 0xFF7F00, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0xFF00FF,
+        0xDEDEDE, 0xFF4A4A, 0xFFA666, 0xFFFFB0, 0x7FFF00, 0xBAFFF0, 0x409EFF, 0xE05E8F,
+        0xD6D6D6, 0xFF7D7D, 0xFFCCAB, 0xFFDE73, 0x7FF75E, 0x66E5FF, 0x94BFFF, 0xFF8AC4,
+        0xCCCCCC, 0xFFBFBF, 0xFF6600, 0xF0C76B, 0xD4FF7D, 0xABDBE5, 0x7F7FFF, 0xFFB8DE,
+        0xBDBDBD, 0xD6BFBF, 0xD6666B, 0xCCCC66, 0xABD647, 0xB0E5E5, 0xB28AFF, 0xDEA6BA,
+        0xA6A6A6, 0xC4A1A1, 0xD6BDAB, 0xC7BF9E, 0x38E5B2, 0x3BE5E5, 0xDEBFF7, 0xDE87F2,
+    ];
+
+    private static Vector4 PaletteColor(uint rgb) =>
+        new(((rgb >> 16) & 0xFF) / 255f, ((rgb >> 8) & 0xFF) / 255f, (rgb & 0xFF) / 255f, 1f);
+
+    /// <summary>
+    /// One colour setting: a swatch showing the current choice, which opens the palette.
+    /// </summary>
     private void ColorBox(string label, TextColor color)
     {
-        var value = new Vector3(color.R, color.G, color.B);
+        var current = new Vector4(color.R, color.G, color.B, 1f);
+        var popup = "palette" + label;
+        var swatch = new Vector2(ImGui.GetFrameHeight(), ImGui.GetFrameHeight());
 
-        if (!ImGui.ColorEdit3($"{label}###color{label}", ref value, ImGuiColorEditFlags.NoInputs))
-            return;
+        if (ImGui.ColorButton($"###color{label}", current, ImGuiColorEditFlags.NoTooltip, swatch))
+            ImGui.OpenPopup(popup);
 
-        color.Set(value.X, value.Y, value.Z);
-        colorsChanged = true;
+        ImGui.SameLine();
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted(label);
+
+        if (!ImGui.BeginPopup(popup)) return;
+
+        for (var i = 0; i < Palette.Length; i++)
+        {
+            if (i % PaletteColumns != 0) ImGui.SameLine();
+
+            var choice = PaletteColor(Palette[i]);
+            if (!ImGui.ColorButton($"###pal{label}{i}", choice, ImGuiColorEditFlags.NoTooltip, swatch))
+                continue;
+
+            color.Set(choice.X, choice.Y, choice.Z);
+            Cfg.Save(Plugin.PluginInterface);
+            ImGui.CloseCurrentPopup();
+        }
+
+        ImGui.EndPopup();
     }
 
     /// <summary>
