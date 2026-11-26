@@ -55,6 +55,11 @@ public class Configuration : IPluginConfiguration
     public bool StackIdentical { get; set; } = true;
 
     /// <summary>
+    /// On the Saved Lists tab, put a furnishing and where it is on one line instead of two.
+    /// </summary>
+    public bool SavedCondensed { get; set; } = true;
+
+    /// <summary>
     /// The old remembered list, by item id. Ticking one copy of an item ticked every copy
     /// everywhere, because the id was all that was kept. Read once at load, turned into
     /// lines by <see cref="MigrateWatched"/>, and left empty from then on.

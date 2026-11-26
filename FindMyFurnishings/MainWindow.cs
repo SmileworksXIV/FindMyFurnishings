@@ -941,6 +941,16 @@ public sealed class MainWindow : Window
         }
 
         DrawViewOptions();
+
+        var condensed = Cfg.SavedCondensed;
+        if (ImGui.Checkbox("Condensed view", ref condensed))
+        {
+            Cfg.SavedCondensed = condensed;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Puts each furnishing and where it is on one line.");
+
         ImGui.Spacing();
         ImGui.Separator();
 
@@ -1004,10 +1014,16 @@ public sealed class MainWindow : Window
                 ImGui.SameLine();
                 ImGui.TextUnformatted(string.IsNullOrEmpty(item.Name) ? $"Item {item.ItemId}" : item.Name);
 
+                // Condensed, the first place a furnishing is goes on the name's own line.
+                // Most are in one place, so most take one line.
+                var first = condensed;
+
                 ImGui.Indent();
 
                 if (!where.TryGetValue(item.ItemId, out var lines) || lines.Count == 0)
                 {
+                    if (first) ImGui.SameLine(0, 18f);
+
                     // Recorded, but every copy is somewhere the options above leave out.
                     // Saying "not recorded" there would be the opposite of true.
                     ImGui.TextDisabled(savedBeforeFilters.GetValueOrDefault(item.ItemId) > 0
@@ -1022,6 +1038,9 @@ public sealed class MainWindow : Window
                         // is not guaranteed to carry it.
                         var label = n > 1 ? $"{text}  x{n:N0}" : text;
 
+                        if (first) ImGui.SameLine(0, 18f);
+                        first = false;
+
                         Colored(Tint(stored, kind), label);
 
                         Whose(who);
@@ -1029,7 +1048,7 @@ public sealed class MainWindow : Window
                 }
 
                 ImGui.Unindent();
-                ImGui.Spacing();
+                if (!condensed) ImGui.Spacing();
             }
 
             if (remove != null)
