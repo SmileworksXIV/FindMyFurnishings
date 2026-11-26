@@ -154,6 +154,9 @@ public sealed class MainWindow : Window
             if (ImGui.BeginTabItem("Instructions")) { DrawHelp(); ImGui.EndTabItem(); }
             ImGui.EndTabBar();
         }
+
+        // A name being typed when its box stopped being drawn. See SaveRename.
+        if (renameUnsaved && !ImGui.IsAnyItemActive()) SaveRename();
     }
 
     // ---------- search ----------
@@ -205,35 +208,7 @@ public sealed class MainWindow : Window
 
         ImGui.Spacing();
 
-        var storedOnly = Cfg.SearchStoredOnly;
-        if (ImGui.Checkbox("View stored items only", ref storedOnly))
-        {
-            Cfg.SearchStoredOnly = storedOnly;
-            Cfg.Save(Plugin.PluginInterface);
-        }
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Hides anything already placed, leaving what is in a storeroom, " +
-                             "your bags or a retainer.");
-
-        ImGui.AlignTextToFramePadding();
-        ImGui.TextUnformatted("Sort by");
-        ImGui.SameLine();
-
-        ImGui.SetNextItemWidth(220);
-        if (ImGui.BeginCombo("##sort", SortNames[Sort]))
-        {
-            for (var i = 0; i < SortNames.Length; i++)
-            {
-                if (!ImGui.Selectable(SortNames[i], i == Sort)) continue;
-
-                Cfg.SearchSort = i;
-                Cfg.Save(Plugin.PluginInterface);
-            }
-
-            ImGui.EndCombo();
-        }
-
-        DrawSearchFilters();
+        DrawViewOptions();
 
         ImGui.Spacing();
         DrawRemembered();
@@ -404,6 +379,44 @@ public sealed class MainWindow : Window
     }
 
     // ---------- what a search looks through ----------
+
+    /// <summary>
+    /// Stored-only, the sort order and the "Search in" tick boxes. Drawn on the Search tab
+    /// and on Saved Lists with the same settings behind both, so a choice made on one
+    /// holds on the other.
+    /// </summary>
+    private void DrawViewOptions()
+    {
+        var storedOnly = Cfg.SearchStoredOnly;
+        if (ImGui.Checkbox("View stored items only", ref storedOnly))
+        {
+            Cfg.SearchStoredOnly = storedOnly;
+            Cfg.Save(Plugin.PluginInterface);
+        }
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Hides anything already placed, leaving what is in a storeroom, " +
+                             "your bags or a retainer.");
+
+        ImGui.AlignTextToFramePadding();
+        ImGui.TextUnformatted("Sort by");
+        ImGui.SameLine();
+
+        ImGui.SetNextItemWidth(220);
+        if (ImGui.BeginCombo("##sort", SortNames[Sort]))
+        {
+            for (var i = 0; i < SortNames.Length; i++)
+            {
+                if (!ImGui.Selectable(SortNames[i], i == Sort)) continue;
+
+                Cfg.SearchSort = i;
+                Cfg.Save(Plugin.PluginInterface);
+            }
+
+            ImGui.EndCombo();
+        }
+
+        DrawSearchFilters();
+    }
 
     /// <summary>True when any character or kind of estate is switched off.</summary>
     private bool SearchIsNarrowed =>
@@ -746,6 +759,9 @@ public sealed class MainWindow : Window
     private readonly Dictionary<uint, List<(string Text, string Who, bool Stored, PlaceKind Kind, int Count)>> savedWhere = new();
     private int savedRevision = -1;
 
+    /// <summary>How many copies of each saved furnishing exist before the view options are applied.</summary>
+    private readonly Dictionary<uint, int> savedBeforeFilters = new();
+
     /// <summary>
     /// Where every copy of every saved furnishing is right now, in one walk of the index.
     /// Read from the current records each time they change, which is the whole point: a
@@ -757,6 +773,7 @@ public sealed class MainWindow : Window
 
         savedRevision = Configuration.Revision;
         savedWhere.Clear();
+        savedBeforeFilters.Clear();
 
         foreach (var list in Cfg.SavedLists)
             foreach (var item in list.Items)
@@ -764,11 +781,19 @@ public sealed class MainWindow : Window
 
         if (savedWhere.Count == 0) return savedWhere;
 
-        void Add(string label, string who, PlaceKind kind, IEnumerable<Piece> pieces)
+        var companyEstates = SearchableCompanyEstates();
+        var storedOnly = Cfg.SearchStoredOnly;
+
+        void Add(string label, string who, PlaceKind kind, bool inScope, IEnumerable<Piece> pieces)
         {
             foreach (var piece in pieces)
             {
                 if (!savedWhere.TryGetValue(piece.ItemId, out var into)) continue;
+
+                savedBeforeFilters[piece.ItemId] = savedBeforeFilters.GetValueOrDefault(piece.ItemId) + 1;
+
+                if (!inScope) continue;
+                if (storedOnly && SpotNames.IsPlaced(piece.Where)) continue;
 
                 var stored = IsStored(piece.Where);
                 var text = $"{label} - {SpotNames.Label(piece.Where)}" +
@@ -782,15 +807,30 @@ public sealed class MainWindow : Window
         }
 
         foreach (var p in Cfg.Properties.Values)
-            Add(p.Label, WhoseLine(p.Owner, p.Label), KindOf(p), p.Pieces);
+            Add(p.Label, WhoseLine(p.Owner, p.Label), KindOf(p), Searchable(p, companyEstates), p.Pieces);
 
         foreach (var h in Cfg.Holdings.Values)
-            Add(h.DisplayName, WhoseLine(h.Owner, h.DisplayName), KindOf(h), h.Pieces);
+            Add(h.DisplayName, WhoseLine(h.Owner, h.DisplayName), KindOf(h), Searchable(h), h.Pieces);
 
-        // By character first, so one character's places sit together under each item.
+        // The chosen order first, then by character, so one character's places still sit
+        // together under each furnishing.
+        var sort = Sort;
+
         foreach (var lines in savedWhere.Values)
             lines.Sort((a, b) =>
             {
+                var first = sort switch
+                {
+                    SortStoredFirst => b.Stored.CompareTo(a.Stored),
+                    SortInventoriesFirst =>
+                        (b.Kind is PlaceKind.Carried or PlaceKind.Retainer)
+                            .CompareTo(a.Kind is PlaceKind.Carried or PlaceKind.Retainer),
+                    SortQuantityHigh => b.Count.CompareTo(a.Count),
+                    SortQuantityLow => a.Count.CompareTo(b.Count),
+                    _ => 0,
+                };
+                if (first != 0) return first;
+
                 var byWho = string.Compare(a.Who, b.Who, StringComparison.OrdinalIgnoreCase);
                 return byWho != 0 ? byWho
                     : string.Compare(a.Text, b.Text, StringComparison.OrdinalIgnoreCase);
@@ -822,6 +862,54 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled($"- {who}");
     }
 
+    private bool renameUnsaved;
+    private string renameListId = string.Empty;
+    private DateTime renameSavedUntil = DateTime.MinValue;
+
+    /// <summary>
+    /// Writes a list's new name to disk and starts the "Name saved." note.
+    ///
+    /// Called when the name box is clicked away from, and again from the end of every
+    /// frame in case it never was: switch tabs or close the window mid-word and the box
+    /// simply stops being drawn, which used to leave the new name unwritten until
+    /// something else happened to save.
+    /// </summary>
+    private void SaveRename()
+    {
+        if (!renameUnsaved) return;
+
+        renameUnsaved = false;
+        renameSavedUntil = DateTime.UtcNow.AddSeconds(4);
+        Cfg.Save(Plugin.PluginInterface);
+    }
+
+    public override void OnClose()
+    {
+        SaveRename();
+        base.OnClose();
+    }
+
+    /// <summary>
+    /// The furnishings of a saved list in the chosen order: by name, or by how many are
+    /// showing for the two quantity orders.
+    /// </summary>
+    private List<SavedItem> Ordered(
+        SavedList list,
+        Dictionary<uint, List<(string Text, string Who, bool Stored, PlaceKind Kind, int Count)>> where)
+    {
+        int Showing(SavedItem i) =>
+            where.TryGetValue(i.ItemId, out var lines) ? lines.Sum(l => l.Count) : 0;
+
+        return Sort switch
+        {
+            SortQuantityHigh => list.Items.OrderByDescending(Showing)
+                                    .ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            SortQuantityLow => list.Items.OrderBy(Showing)
+                                   .ThenBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            _ => list.Items.OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+        };
+    }
+
     private void DrawSavedLists()
     {
         if (Cfg.SavedLists.Count == 0)
@@ -830,6 +918,10 @@ public sealed class MainWindow : Window
                               "\"Save as new list\" on the Remembered list.");
             return;
         }
+
+        DrawViewOptions();
+        ImGui.Spacing();
+        ImGui.Separator();
 
         var where = SavedWhere();
         SavedList? delete = null;
@@ -849,11 +941,14 @@ public sealed class MainWindow : Window
             var name = list.Name;
             ImGui.SetNextItemWidth(260);
             if (ImGui.InputTextWithHint($"##savedname{list.Id}", "Name this list...", ref name, 60))
+            {
                 list.Name = name;
+                renameUnsaved = true;
+                renameListId = list.Id;
+            }
 
             // Written when you finish typing, not on every key.
-            if (ImGui.IsItemDeactivatedAfterEdit())
-                Cfg.Save(Plugin.PluginInterface);
+            if (ImGui.IsItemDeactivatedAfterEdit()) SaveRename();
 
             ImGui.SameLine();
 
@@ -870,11 +965,17 @@ public sealed class MainWindow : Window
                 deleteListId = list.Id;
             }
 
+            if (renameListId == list.Id && DateTime.UtcNow < renameSavedUntil)
+            {
+                ImGui.SameLine();
+                ImGui.TextDisabled("Name saved.");
+            }
+
             ImGui.Spacing();
 
             SavedItem? remove = null;
 
-            foreach (var item in list.Items)
+            foreach (var item in Ordered(list, where))
             {
                 if (ImGui.SmallButton($"Remove###savedrm{list.Id}{item.ItemId}")) remove = item;
                 ImGui.SameLine();
@@ -886,7 +987,11 @@ public sealed class MainWindow : Window
 
                 if (!where.TryGetValue(item.ItemId, out var lines) || lines.Count == 0)
                 {
-                    ImGui.TextDisabled("Not recorded anywhere right now.");
+                    // Recorded, but every copy is somewhere the options above leave out.
+                    // Saying "not recorded" there would be the opposite of true.
+                    ImGui.TextDisabled(savedBeforeFilters.GetValueOrDefault(item.ItemId) > 0
+                        ? "Hidden by the options above."
+                        : "Not recorded anywhere right now.");
                 }
                 else
                 {
