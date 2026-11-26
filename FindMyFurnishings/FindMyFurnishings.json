@@ -1,0 +1,22 @@
+{
+  "Name": "Find My Furnishings",
+  "InternalName": "FindMyFurnishings",
+  "Author": "Smileworks",
+  "Punchline": "Where did I put that lamp?",
+  "Description": "Keeps a searchable index of all furnishing items across editable estates and inventories.",
+  "ApplicableVersion": "any",
+  "RepoUrl": "https://github.com/SmileworksXIV/FindMyFurnishings",
+  "DalamudApiLevel": 15,
+  "Tags": [
+    "housing",
+    "furniture",
+    "furnishing",
+    "search",
+    "inventory",
+    "decorating"
+  ],
+  "CategoryTags": [
+    "utility"
+  ],
+  "LoadPriority": 0
+}
